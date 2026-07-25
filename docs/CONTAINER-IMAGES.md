@@ -6,7 +6,7 @@ HammerDB-Scale deploys HammerDB as Kubernetes Jobs using pre-built container ima
 
 | Image | Database | Source |
 |-------|----------|--------|
-| `sillidata/hammerdb-scale:latest` | SQL Server | [dockerfile](../dockerfile) |
+| `sillidata/hammerdb-scale:latest` | SQL Server | [Dockerfile](../Dockerfile) |
 | `sillidata/hammerdb-scale-oracle:latest` | Oracle | [Dockerfile.oracle](../Dockerfile.oracle) |
 
 These images are hosted on Docker Hub and can be pulled without authentication.
@@ -33,7 +33,7 @@ The **Oracle image** extends the MSSQL image and adds:
 ### SQL Server Image
 
 ```bash
-docker build -f dockerfile -t my-org/hammerdb-scale:latest .
+docker build -f Dockerfile -t my-org/hammerdb-scale:latest .
 ```
 
 ### Oracle Image
@@ -42,7 +42,7 @@ The Oracle image extends the base image:
 
 ```bash
 # Build base first
-docker build -f dockerfile -t my-org/hammerdb-scale:latest .
+docker build -f Dockerfile -t my-org/hammerdb-scale:latest .
 
 # Then build Oracle (references base image)
 docker build -f Dockerfile.oracle -t my-org/hammerdb-scale-oracle:latest .

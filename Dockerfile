@@ -1,17 +1,22 @@
 # HammerDB Scale - Base Image
-# Supports: SQL Server, PostgreSQL, MySQL (Oracle requires extension image)
 #
-# This is the public base image containing HammerDB and open-source database
-# drivers. For Oracle support, build the extension image using Dockerfile.oracle
+# Verified working: SQL Server and PostgreSQL.
+# Oracle needs the extension image (Dockerfile.oracle) because Oracle Instant
+# Client cannot be redistributed.
+#
+# ARCHITECTURE: x86_64. HammerDB 6.0 does publish ARM64 tarballs and this image
+# would build for ARM, but the Oracle extension cannot (Instant Client is
+# x86_64-only), so the pair is kept uniformly x86_64 to avoid shipping a base
+# image that works on ARM alongside an Oracle image that does not.
 #
 # BUILD:
-#   docker build -t sillidata/hammerdb-scale:latest .
+#   docker build -t sillidata/hammerdb-scale:6.0 .
 #
 # To build a different HammerDB version:
 #   docker build --build-arg HAMMERDB_VERSION=5.0 -t sillidata/hammerdb-scale:5.0 .
 #
-# ORACLE USERS:
-#   docker build -f Dockerfile.oracle -t myregistry/hammerdb-scale-oracle:latest .
+# Prefer hack/build-images.sh, which builds this and the Oracle
+# image in the right order and verifies both.
 
 FROM ubuntu:24.04
 
@@ -20,10 +25,22 @@ FROM ubuntu:24.04
 # than hardcoding a path, so a version bump is this one argument.
 ARG HAMMERDB_VERSION=6.0
 
+# Provenance. Populated by the release script; harmless when built by hand.
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+ARG IMAGE_VERSION=dev
+
 LABEL maintainer="hammerdb-scale"
 LABEL description="HammerDB Scale Test Runner - Multi-Database Performance Testing"
 LABEL hammerdb.version="${HAMMERDB_VERSION}"
-LABEL database.support="mssql,postgresql,mysql (oracle via extension)"
+LABEL database.support="mssql,postgresql (oracle via extension image)"
+LABEL org.opencontainers.image.title="hammerdb-scale"
+LABEL org.opencontainers.image.description="HammerDB Scale Test Runner - Multi-Database Performance Testing"
+LABEL org.opencontainers.image.source="https://github.com/PureStorage-OpenConnect/hammerdb-scale"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive

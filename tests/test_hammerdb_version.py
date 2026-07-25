@@ -25,9 +25,9 @@ CHART_TEMPLATE = "templates/job-hammerdb-worker.yaml"
 
 
 def _dockerfile_version() -> str:
-    text = (REPO_ROOT / "dockerfile").read_text()
+    text = (REPO_ROOT / "Dockerfile").read_text()
     match = re.search(r"^ARG HAMMERDB_VERSION=(\S+)", text, re.MULTILINE)
-    assert match, "dockerfile must declare ARG HAMMERDB_VERSION"
+    assert match, "Dockerfile must declare ARG HAMMERDB_VERSION"
     return match.group(1)
 
 
@@ -59,7 +59,7 @@ class TestNoHardcodedPaths:
 
     @pytest.mark.parametrize(
         "relative_path",
-        ["entrypoint.sh", "dockerfile", "Dockerfile.oracle"],
+        ["entrypoint.sh", "Dockerfile", "Dockerfile.oracle"],
     )
     def test_no_versioned_hammerdb_paths(self, relative_path):
         text = (REPO_ROOT / relative_path).read_text()

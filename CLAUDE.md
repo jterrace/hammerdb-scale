@@ -26,24 +26,33 @@ one Kubernetes Job per database target, then collects and parses the job logs in
 aggregated results and a self-contained HTML scorecard.
 
 - `src/hammerdb_scale/` — the CLI package (see MEMORY.md for the module map)
-- `src/hammerdb_scale/chart/` — the bundled Helm chart shipped inside the wheel
-- `templates/`, `scripts/`, `Chart.yaml`, `values.yaml` — repo-root copies of the same chart
+- `src/hammerdb_scale/chart/` — the bundled Helm chart, the single source of truth
+- `templates/`, `scripts/`, `Chart.yaml`, `values.yaml` — symlinks into the chart above
+- `src/hammerdb_scale/runtime/` — execution backends (Kubernetes and container)
 - `entrypoint.sh` — the in-container dispatcher that selects and runs a TCL script
-- `dockerfile`, `Dockerfile.oracle` — base image and Oracle Instant Client extension
+- `Dockerfile`, `Dockerfile.oracle` — base image and Oracle Instant Client extension
+- `hack/build-images.sh` — builds and verifies both images
 
 ### Things worth knowing
 
-- The repo-root chart files and `src/hammerdb_scale/chart/` are duplicates. Changes to
-  TCL scripts or templates must be applied to both, or the packaged wheel drifts from
-  the repo.
-- HammerDB version is hardcoded as the path `/opt/HammerDB-5.0` in `entrypoint.sh`,
-  the Dockerfiles, and the Helm job template `volumeMounts.mountPath`. All three must
-  change together for a version bump.
-- Database support is gated in four places: the `DatabaseType` enum in
+- The repo-root chart paths are symlinks, not copies. They used to be duplicates and
+  had already drifted; `get_chart_path()` prefers the packaged copy, so a fix applied
+  only at the repo root would never reach anyone installing from PyPI.
+- The HammerDB version lives in `ARG HAMMERDB_VERSION` and flows through
+  `HAMMERDB_HOME`. `entrypoint.sh` *searches* for its mounted scripts rather than
+  requiring the chart's mountPath to match the image, because those are set by
+  different artifacts and can always disagree.
+- `DEFAULT_HAMMERDB_VERSION` is what this repo builds; `PUBLISHED_HAMMERDB_VERSION`
+  is what the published images contain and drives the chart default. Move the latter
+  only after pushing new images.
+- Database support is gated in five places: the `DatabaseType` enum in
   `config/schema.py`, the `case` blocks in `entrypoint.sh`, the parser registry in
-  `results/parsers.py`, and the per-database TCL script directories.
-- Credentials are currently passed as plain environment variables in the Job spec and
-  are visible via `kubectl describe job`.
+  `results/parsers.py`, the per-database TCL script directories, and the per-database
+  ConfigMap template in the chart.
+- The base image needs `libpq5` for PostgreSQL: HammerDB bundles Pgtcl but links the
+  system libpq at runtime.
+- Credentials go through a Kubernetes Secret by default (`kubernetes.use_secrets`),
+  so they are not readable via `kubectl describe job`.
 
 ## Working preferences
 
