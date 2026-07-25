@@ -9,10 +9,15 @@
 #   docker build -f Dockerfile.oracle -t myregistry/hammerdb-scale-oracle:latest .
 #   docker push myregistry/hammerdb-scale-oracle:latest
 #
-# The base image (sillidata/hammerdb-scale) includes HammerDB 5.0 and drivers for
+# The base image (sillidata/hammerdb-scale) includes HammerDB and drivers for
 # SQL Server, PostgreSQL, and MySQL. This extension adds Oracle support.
+#
+# To build against a locally-built base image:
+#   docker build -f Dockerfile.oracle --build-arg BASE_IMAGE=hammerdb-scale:local \
+#     -t hammerdb-scale-oracle:local .
 
-FROM sillidata/hammerdb-scale:latest
+ARG BASE_IMAGE=sillidata/hammerdb-scale:latest
+FROM ${BASE_IMAGE}
 
 LABEL maintainer="hammerdb-scale"
 LABEL description="HammerDB Scale - Oracle Extension"

@@ -11,6 +11,12 @@ DEFAULT_NAMESPACE = "hammerdb"
 # CLI phase -> Helm/entrypoint phase
 PHASE_MAP = {"build": "build", "run": "load"}
 
+# HammerDB version shipped in the default images, and where it installs to.
+# entrypoint.sh reads HAMMERDB_HOME from the image; this is the fallback used
+# when rendering the chart, and must match the image's ARG HAMMERDB_VERSION.
+DEFAULT_HAMMERDB_VERSION = "6.0"
+DEFAULT_HAMMERDB_HOME = f"/opt/HammerDB-{DEFAULT_HAMMERDB_VERSION}"
+
 DEFAULT_RESULTS_DIR = "results"
 DEFAULT_JOB_TTL = 86400
 NAMING_PREFIX = "hdb"

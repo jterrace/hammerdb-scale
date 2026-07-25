@@ -104,6 +104,10 @@ class ImageConfig(BaseModel):
     repository: str = "sillidata/hammerdb-scale"
     tag: str = "latest"
     pull_policy: ImagePullPolicy = ImagePullPolicy.always
+    # Where HammerDB lives inside the image. Only needs setting for a custom
+    # image built with a non-default HAMMERDB_VERSION; the container backend
+    # otherwise reads HAMMERDB_HOME from the image itself.
+    hammerdb_home: Optional[str] = None
 
 
 # --- Target Models ---

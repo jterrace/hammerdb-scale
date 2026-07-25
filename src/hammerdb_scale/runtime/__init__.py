@@ -49,6 +49,7 @@ def get_backend(config, namespace: str | None = None) -> Backend:
         return ContainerBackend(
             runtime=runtime,
             network=getattr(container_cfg, "network", None),
+            hammerdb_home=config.targets.defaults.image.hammerdb_home,
         )
 
     from hammerdb_scale.runtime.kubernetes import KubernetesBackend

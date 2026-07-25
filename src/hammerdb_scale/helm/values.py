@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hammerdb_scale.config.defaults import expand_targets
 from hammerdb_scale.config.schema import HammerDBScaleConfig, MssqlConfig
-from hammerdb_scale.constants import PHASE_MAP, VERSION
+from hammerdb_scale.constants import DEFAULT_HAMMERDB_HOME, PHASE_MAP, VERSION
 from hammerdb_scale.k8s.naming import generate_run_hash
 
 
@@ -42,6 +42,9 @@ def generate_helm_values(
                 "tag": default_image.tag,
                 "pullPolicy": default_image.pull_policy.value,
             },
+            # Where the chart mounts the TCL scripts. Must match HAMMERDB_HOME
+            # in the image or entrypoint.sh will not find its scripts.
+            "hammerdbHome": default_image.hammerdb_home or DEFAULT_HAMMERDB_HOME,
             "resources": {
                 "requests": config.resources.requests.model_dump(),
                 "limits": config.resources.limits.model_dump(),

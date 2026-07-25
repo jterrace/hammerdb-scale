@@ -23,7 +23,12 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hammerdb_scale.constants import PHASE_MAP, HammerDBScaleError, get_chart_path
+from hammerdb_scale.constants import (
+    DEFAULT_HAMMERDB_HOME,
+    PHASE_MAP,
+    HammerDBScaleError,
+    get_chart_path,
+)
 from hammerdb_scale.runtime.base import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -71,11 +76,13 @@ class ContainerBackend:
         runtime: str | None = None,
         network: str | None = None,
         scripts_dir: Path | None = None,
+        hammerdb_home: str | None = None,
     ) -> None:
         self.runtime = detect_runtime(runtime)
         self.name = self.runtime
         self.network = network
         self._scripts_dir = scripts_dir
+        self.hammerdb_home = hammerdb_home
 
     # --- internals ---
 
@@ -220,11 +227,22 @@ class ContainerBackend:
     def _script_mount_target(self, image: str) -> str:
         """Where inside the container the TCL scripts must appear.
 
-        The image's HAMMERDB_HOME tells us; fall back to the historical 5.0
-        path for images built before that variable existed.
+        Preference order: an explicit config override, then the image's own
+        HAMMERDB_HOME, then a probe for an installed HammerDB. Getting this
+        wrong means entrypoint.sh cannot find its scripts, so the probe is
+        worth the extra call.
         """
+        if self.hammerdb_home:
+            return f"{self.hammerdb_home}/scripts"
+
         result = self._run(
-            ["image", "inspect", image, "--format", "{{range .Config.Env}}{{println .}}{{end}}"],
+            [
+                "image",
+                "inspect",
+                image,
+                "--format",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+            ],
             timeout=60,
             check=False,
         )
@@ -234,7 +252,27 @@ class ContainerBackend:
                     home = line.split("=", 1)[1].strip()
                     if home:
                         return f"{home}/scripts"
-        return "/opt/HammerDB-5.0/scripts"
+
+        # Older images predate HAMMERDB_HOME. Ask the image where HammerDB is
+        # rather than guessing a version that may not match.
+        probe = self._run(
+            [
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                image,
+                "-c",
+                "ls -d /opt/HammerDB-* 2>/dev/null | head -1",
+            ],
+            timeout=120,
+            check=False,
+        )
+        discovered = probe.stdout.strip().splitlines()
+        if probe.returncode == 0 and discovered and discovered[0].startswith("/opt/"):
+            return f"{discovered[0].strip()}/scripts"
+
+        return f"{DEFAULT_HAMMERDB_HOME}/scripts"
 
     def list_workloads(
         self, test_id: str, phase: str | None = None

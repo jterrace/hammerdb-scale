@@ -1,24 +1,33 @@
 # HammerDB Scale - Base Image
 # Supports: SQL Server, PostgreSQL, MySQL (Oracle requires extension image)
 #
-# This is the public base image containing HammerDB 5.0 and open-source database drivers.
-# For Oracle support, build the extension image using Dockerfile.oracle
+# This is the public base image containing HammerDB and open-source database
+# drivers. For Oracle support, build the extension image using Dockerfile.oracle
 #
 # BUILD:
 #   docker build -t sillidata/hammerdb-scale:latest .
+#
+# To build a different HammerDB version:
+#   docker build --build-arg HAMMERDB_VERSION=5.0 -t sillidata/hammerdb-scale:5.0 .
 #
 # ORACLE USERS:
 #   docker build -f Dockerfile.oracle -t myregistry/hammerdb-scale-oracle:latest .
 
 FROM ubuntu:24.04
 
+# The HammerDB version is defined once here and flows into the install path,
+# HAMMERDB_HOME and the image label. entrypoint.sh reads HAMMERDB_HOME rather
+# than hardcoding a path, so a version bump is this one argument.
+ARG HAMMERDB_VERSION=6.0
+
 LABEL maintainer="hammerdb-scale"
 LABEL description="HammerDB Scale Test Runner - Multi-Database Performance Testing"
-LABEL hammerdb.version="5.0"
+LABEL hammerdb.version="${HAMMERDB_VERSION}"
 LABEL database.support="mssql,postgresql,mysql (oracle via extension)"
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
+ENV HAMMERDB_HOME=/opt/HammerDB-${HAMMERDB_VERSION}
 
 # Install base packages and SQL Server drivers (Microsoft - permissive license)
 RUN apt-get update && \
@@ -43,27 +52,26 @@ RUN apt-get update && \
 # Install Python dependencies for Pure Storage metrics collection
 RUN python3 -m pip install --no-cache-dir --break-system-packages requests urllib3
 
-# Install HammerDB 5.0
+# Install HammerDB
 WORKDIR /opt
-RUN wget https://github.com/TPC-Council/HammerDB/releases/download/v5.0/HammerDB-5.0-Prod-Lin-UBU24.tar.gz && \
-    tar -xzf HammerDB-5.0-Prod-Lin-UBU24.tar.gz && \
-    rm HammerDB-5.0-Prod-Lin-UBU24.tar.gz && \
+RUN wget "https://github.com/TPC-Council/HammerDB/releases/download/v${HAMMERDB_VERSION}/HammerDB-${HAMMERDB_VERSION}-Prod-Lin-UBU24.tar.gz" && \
+    tar -xzf "HammerDB-${HAMMERDB_VERSION}-Prod-Lin-UBU24.tar.gz" && \
+    rm "HammerDB-${HAMMERDB_VERSION}-Prod-Lin-UBU24.tar.gz" && \
     echo 'export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/:$LD_LIBRARY_PATH' >> ~/.bashrc
 
 # Configure HammerDB
-WORKDIR /opt/HammerDB-5.0
-RUN chmod +x ./hammerdbcli && \
-    ln -sf /opt/mssql-tools18/bin/bcp /opt/HammerDB-5.0/bcp && \
+RUN chmod +x "${HAMMERDB_HOME}/hammerdbcli" && \
+    ln -sf /opt/mssql-tools18/bin/bcp "${HAMMERDB_HOME}/bcp" && \
     ln -sf /opt/mssql-tools18/bin/bcp /usr/local/bin/bcp
 
 # Add entrypoint script
-COPY entrypoint.sh /opt/HammerDB-5.0/entrypoint.sh
-RUN chmod +x /opt/HammerDB-5.0/entrypoint.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Add Pure Storage metrics collection script
-COPY scripts/collect_pure_metrics.py /opt/HammerDB-5.0/scripts/collect_pure_metrics.py
-RUN chmod +x /opt/HammerDB-5.0/scripts/collect_pure_metrics.py
+COPY scripts/collect_pure_metrics.py ${HAMMERDB_HOME}/scripts/collect_pure_metrics.py
+RUN chmod +x "${HAMMERDB_HOME}/scripts/collect_pure_metrics.py"
 
-WORKDIR /opt/HammerDB-5.0
+WORKDIR ${HAMMERDB_HOME}
 
-ENTRYPOINT ["/opt/HammerDB-5.0/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
