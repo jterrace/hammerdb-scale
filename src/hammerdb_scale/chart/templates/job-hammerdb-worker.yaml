@@ -157,7 +157,9 @@ spec:
         - name: DURATION
           value: {{ $tproccConfig.duration | quote }}
         - name: TOTAL_ITERATIONS
-          value: {{ $tproccConfig.total_iterations | quote }}
+          # printf %.0f avoids Go rendering large ints in scientific notation
+          # (10000000 -> "1e+07"), which the TCL scripts cannot parse.
+          value: {{ printf "%.0f" (float64 $tproccConfig.total_iterations) | quote }}
         - name: TPROCC_LOG_TO_TEMP
           value: "0"
         - name: TPROCC_USE_TRANSACTION_COUNTER

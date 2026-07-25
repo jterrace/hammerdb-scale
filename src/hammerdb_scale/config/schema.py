@@ -30,6 +30,21 @@ class ImagePullPolicy(str, Enum):
     never = "Never"
 
 
+class BackendType(str, Enum):
+    """Where benchmark workloads execute."""
+
+    kubernetes = "kubernetes"
+    container = "container"  # auto-detect podman or docker
+    podman = "podman"
+    docker = "docker"
+
+
+class ContainerRuntimeName(str, Enum):
+    auto = "auto"
+    podman = "podman"
+    docker = "docker"
+
+
 # --- Oracle Config Models ---
 
 
@@ -166,6 +181,13 @@ class KubernetesConfig(BaseModel):
     job_ttl: int = Field(default=86400, ge=0)
 
 
+class ContainerConfig(BaseModel):
+    """Settings for the local container backend (podman or docker)."""
+
+    runtime: ContainerRuntimeName = ContainerRuntimeName.auto
+    network: Optional[str] = None  # None uses the runtime's default network
+
+
 # --- Storage Metrics ---
 
 
@@ -194,10 +216,12 @@ class HammerDBScaleConfig(BaseModel):
     name: str
     description: str = ""
     default_benchmark: Optional[BenchmarkType] = None
+    backend: BackendType = BackendType.kubernetes
     targets: TargetsConfig
     hammerdb: HammerDBConfig = HammerDBConfig()
     resources: ResourcesConfig = ResourcesConfig()
     kubernetes: KubernetesConfig = KubernetesConfig()
+    container: ContainerConfig = ContainerConfig()
     storage_metrics: StorageMetricsConfig = StorageMetricsConfig()
 
     @model_validator(mode="after")
