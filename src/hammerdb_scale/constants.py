@@ -48,12 +48,13 @@ DEFAULT_HAMMERDB_VERSION = "6.0"
 
 # Where the chart mounts TCL scripts by default.
 #
-# This deliberately tracks the *published* image, which is still 5.0, not the
-# version we build locally. entrypoint.sh searches for its scripts rather than
-# requiring an exact match, so a mismatch is tolerated either way; but pointing
-# the default at a path the published image does not have would break every
-# out-of-the-box Kubernetes run. Move this to 6.0 when 6.0 images are published.
-PUBLISHED_HAMMERDB_VERSION = "5.0"
+# This deliberately tracks the *published* image rather than the version this
+# repo builds, because the two can differ between a local build and a registry
+# push. entrypoint.sh searches for its scripts rather than requiring an exact
+# match, so a mismatch is tolerated either way; but pointing the default at a
+# path the published image does not have would break every out-of-the-box
+# Kubernetes run. Only move this after the matching images are pushed.
+PUBLISHED_HAMMERDB_VERSION = "6.0"
 DEFAULT_HAMMERDB_HOME = f"/opt/HammerDB-{PUBLISHED_HAMMERDB_VERSION}"
 
 DEFAULT_RESULTS_DIR = "results"
