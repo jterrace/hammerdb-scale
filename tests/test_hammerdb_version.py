@@ -100,23 +100,29 @@ class TestNoHardcodedPaths:
         assert "/opt/oracle/instantclient_*" in text
 
 
-class TestChartsAreInSync:
-    """The repo-root chart and the packaged chart must not drift.
+class TestChartIsNotDuplicated:
+    """The repo-root chart paths must be symlinks into the packaged chart.
 
-    get_chart_path() prefers the packaged copy, so a fix applied only at the
-    repo root never reaches anyone who installed from PyPI.
+    They used to be real duplicates, and they had already drifted:
+    collect_pure_metrics.py differed between the two copies. Because
+    get_chart_path() prefers the packaged copy, a fix applied only at the repo
+    root would never reach anyone installing from PyPI. Symlinks make the
+    packaged chart the single source of truth while keeping `helm ... .`
+    working from the repo root.
     """
 
     @pytest.mark.parametrize(
-        "relative_path",
-        [CHART_TEMPLATE, "templates/_helpers.tpl", "Chart.yaml"],
+        "entry", ["templates", "scripts", "Chart.yaml", "values.yaml"]
     )
-    def test_chart_files_match(self, relative_path):
-        root_file = REPO_ROOT / relative_path
-        packaged = REPO_ROOT / "src/hammerdb_scale/chart" / relative_path
-        if not root_file.exists() or not packaged.exists():
-            pytest.skip(f"{relative_path} not present in both charts")
-        assert root_file.read_text() == packaged.read_text(), (
-            f"{relative_path} differs between the repo-root chart and the "
-            f"packaged chart; apply changes to both"
+    def test_repo_root_entry_is_a_symlink(self, entry):
+        path = REPO_ROOT / entry
+        assert path.is_symlink(), (
+            f"{entry} should be a symlink into src/hammerdb_scale/chart/, "
+            f"not a second copy that can drift"
         )
+        assert path.resolve() == (REPO_ROOT / "src/hammerdb_scale/chart" / entry).resolve()
+
+    def test_both_paths_reach_the_same_template(self):
+        root = (REPO_ROOT / CHART_TEMPLATE).read_text()
+        packaged = (REPO_ROOT / "src/hammerdb_scale/chart" / CHART_TEMPLATE).read_text()
+        assert root == packaged

@@ -2,7 +2,39 @@
 
 from pathlib import Path
 
-VERSION = "2.0.2"
+def _package_version() -> str:
+    """Resolve the CLI version, with pyproject.toml as the source of truth.
+
+    Duplicating the version in this module drifted: it said 2.0.2 while
+    pyproject said 2.0.3, so `hammerdb-scale version` reported the wrong
+    number. Installed metadata alone is not enough either, because an editable
+    install keeps whatever version was current when `pip install -e` last ran
+    (observed reporting 2.0.0 against a 2.0.3 source tree).
+
+    So: prefer pyproject.toml when running from a source checkout, and fall
+    back to installed metadata for a normal wheel install.
+    """
+    pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            import tomllib
+
+            with open(pyproject, "rb") as fh:
+                declared = tomllib.load(fh).get("project", {}).get("version")
+            if declared:
+                return str(declared)
+        except (OSError, ValueError, ImportError):
+            pass
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("hammerdb-scale")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+VERSION = _package_version()
 
 DEFAULT_CONFIG_FILENAMES = ["hammerdb-scale.yaml", "hammerdb-scale.yml"]
 CONFIG_ENV_VAR = "HAMMERDB_SCALE_CONFIG"

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from hammerdb_scale.constants import POLL_INTERVAL, NoResultsError
-from hammerdb_scale.output import console, print_error, print_success
+from hammerdb_scale.output import console, print_error, print_success, print_warning
 from hammerdb_scale.runtime.base import STATUS_COMPLETED, STATUS_FAILED
 
 
@@ -50,7 +50,12 @@ def resolve_test_id(
 
 
 def _find_backend_test_id(backend, deployment_name: str | None) -> str | None:
-    """Ask the backend for its most recent test ID."""
+    """Ask the backend for its most recent test ID.
+
+    A backend that cannot be queried is not the same as a backend with no
+    runs, so the reason is surfaced as a warning rather than swallowed. The
+    caller still falls back to locally stored results.
+    """
     finder = getattr(backend, "find_test_ids", None)
     if finder is not None:
         try:
@@ -58,8 +63,8 @@ def _find_backend_test_id(backend, deployment_name: str | None) -> str | None:
                 if deployment_name and not test_id.startswith(deployment_name + "-"):
                     continue
                 return test_id
-        except Exception:
-            return None
+        except Exception as e:
+            print_warning(f"Could not list runs from {backend.name}: {e}")
         return None
 
     # Kubernetes backend: reuse the existing Helm-release-based lookup.
@@ -67,7 +72,8 @@ def _find_backend_test_id(backend, deployment_name: str | None) -> str | None:
         from hammerdb_scale.k8s.jobs import _find_most_recent_k8s_test_id
 
         return _find_most_recent_k8s_test_id(backend.namespace, deployment_name)
-    except Exception:
+    except Exception as e:
+        print_warning(f"Could not list runs from Kubernetes: {e}")
         return None
 
 

@@ -43,6 +43,63 @@ def main(
     _state["verbose"] = verbose
 
 
+def _tool_version(tool_path: str, tool: str) -> str | None:
+    """Return a tool's version string, or None if it could not be determined.
+
+    kubectl removed --short in 1.28, so asking for it fails outright on any
+    current install. Use the JSON output it has supported for years and fall
+    back to plain `version` for older builds and for helm.
+    """
+    attempts: list[list[str]] = []
+    if tool == "kubectl":
+        attempts.append([tool_path, "version", "--client", "-o", "json"])
+    if tool in ("podman", "docker"):
+        # `podman version` prints a multi-line client/server block.
+        attempts.append([tool_path, "version", "--format", "{{.Client.Version}}"])
+        attempts.append([tool_path, "--version"])
+    attempts.append([tool_path, "version", "--short"])
+    attempts.append([tool_path, "version"])
+
+    for args in attempts:
+        try:
+            result = subprocess.run(
+                args, capture_output=True, text=True, timeout=10
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+
+        text = result.stdout.strip()
+        if "-o" in args:
+            try:
+                import json as json_mod
+
+                data = json_mod.loads(text)
+                git_version = data.get("clientVersion", {}).get("gitVersion")
+                if git_version:
+                    return git_version
+            except (ValueError, AttributeError):
+                continue
+        else:
+            return text.splitlines()[0].strip()
+    return None
+
+
+def _kubectl_context(kubectl_path: str) -> str:
+    """Current kubeconfig context, or 'unknown'."""
+    try:
+        result = subprocess.run(
+            [kubectl_path, "config", "current-context"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 @app.command()
 def version() -> None:
     """Show CLI and tooling versions."""
@@ -52,15 +109,10 @@ def version() -> None:
     # helm
     helm_path = shutil.which("helm")
     if helm_path:
-        try:
-            result = subprocess.run(
-                [helm_path, "version", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            console.print(f"  helm            {result.stdout.strip()}")
-        except Exception:
+        helm_version = _tool_version(helm_path, "helm")
+        if helm_version:
+            console.print(f"  helm            {helm_version}")
+        else:
             console.print(
                 "  helm            [yellow]found but version check failed[/yellow]"
             )
@@ -72,23 +124,11 @@ def version() -> None:
     # kubectl
     kubectl_path = shutil.which("kubectl")
     if kubectl_path:
-        try:
-            result = subprocess.run(
-                [kubectl_path, "version", "--client", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            version_str = result.stdout.strip()
-            ctx_result = subprocess.run(
-                [kubectl_path, "config", "current-context"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            ctx = ctx_result.stdout.strip() if ctx_result.returncode == 0 else "unknown"
-            console.print(f"  kubectl         {version_str} (context: {ctx})")
-        except Exception:
+        kubectl_version = _tool_version(kubectl_path, "kubectl")
+        ctx = _kubectl_context(kubectl_path)
+        if kubectl_version:
+            console.print(f"  kubectl         {kubectl_version} (context: {ctx})")
+        else:
             console.print(
                 "  kubectl         [yellow]found but version check failed[/yellow]"
             )
@@ -97,6 +137,14 @@ def version() -> None:
             "  kubectl         [red]not found[/red] "
             "(install from https://kubernetes.io/docs/tasks/tools/)"
         )
+
+    # container runtime
+    for runtime in ("podman", "docker"):
+        runtime_path = shutil.which(runtime)
+        if runtime_path:
+            runtime_version = _tool_version(runtime_path, runtime)
+            if runtime_version:
+                console.print(f"  {runtime:<15} {runtime_version}")
 
 
 def _build_config_yaml(
@@ -485,52 +533,52 @@ def validate(
     for w in warnings:
         print_warning(w)
 
-    # Layer 4: Prerequisites
+    # Layer 4: Prerequisites for the configured backend
     console.print("\nChecking prerequisites...")
-    helm_path = shutil.which("helm")
-    if helm_path:
-        try:
-            result = subprocess.run(
-                [helm_path, "version", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            print_success(f"helm found ({result.stdout.strip()})")
-        except Exception:
-            print_warning("helm found but version check failed")
-    else:
-        print_error("helm not found (install from https://helm.sh)")
-        errors_found = True
+    uses_kubernetes = config.backend.value == "kubernetes"
 
-    kubectl_path = shutil.which("kubectl")
-    if kubectl_path:
-        try:
-            result = subprocess.run(
-                [kubectl_path, "version", "--client", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
+    if uses_kubernetes:
+        helm_path = shutil.which("helm")
+        if helm_path:
+            helm_version = _tool_version(helm_path, "helm")
+            print_success(f"helm found ({helm_version or 'version unknown'})")
+        else:
+            print_error("helm not found (install from https://helm.sh)")
+            errors_found = True
+
+        kubectl_path = shutil.which("kubectl")
+        if kubectl_path:
+            kubectl_version = _tool_version(kubectl_path, "kubectl")
+            print_success(f"kubectl found ({kubectl_version or 'version unknown'})")
+            print_success(f"Current context: {_kubectl_context(kubectl_path)}")
+        else:
+            print_error(
+                "kubectl not found "
+                "(install from https://kubernetes.io/docs/tasks/tools/)"
             )
-            ctx_result = subprocess.run(
-                [kubectl_path, "config", "current-context"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            ctx = ctx_result.stdout.strip() if ctx_result.returncode == 0 else "unknown"
-            print_success(f"kubectl found ({result.stdout.strip()})")
-            print_success(f"Current context: {ctx}")
-        except Exception:
-            print_warning("kubectl found but version check failed")
+            errors_found = True
     else:
-        print_error(
-            "kubectl not found (install from https://kubernetes.io/docs/tasks/tools/)"
+        # Container backend: helm and kubectl are irrelevant.
+        from hammerdb_scale.runtime.container import (
+            ContainerRuntimeError,
+            detect_runtime,
         )
-        errors_found = True
+
+        try:
+            requested = config.container.runtime.value
+            runtime = detect_runtime(None if requested == "auto" else requested)
+            runtime_path = shutil.which(runtime)
+            runtime_version = (
+                _tool_version(runtime_path, runtime) if runtime_path else None
+            )
+            print_success(f"{runtime} found ({runtime_version or 'version unknown'})")
+        except ContainerRuntimeError as e:
+            print_error(str(e))
+            errors_found = True
 
     # Layer 5: K8s access
-    if kubectl_path:
+    if uses_kubernetes and shutil.which("kubectl"):
+        kubectl_path = shutil.which("kubectl")
         console.print("\nChecking Kubernetes access...")
         ns = config.kubernetes.namespace
         try:
@@ -547,36 +595,28 @@ def validate(
                     f"Namespace '{ns}' does not exist. "
                     f"It will be created during deployment."
                 )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             print_warning("Could not check namespace")
 
-        try:
-            result = subprocess.run(
-                [kubectl_path, "auth", "can-i", "create", "jobs", "-n", ns],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and "yes" in result.stdout.lower():
-                print_success("Can create Jobs in namespace")
-            else:
-                print_warning("Cannot verify Job creation permissions")
-        except Exception:
-            print_warning("Could not check permissions")
+        # Secrets are only needed when credentials go through one.
+        resources = ["jobs", "configmaps"]
+        if config.kubernetes.use_secrets:
+            resources.append("secrets")
 
-        try:
-            result = subprocess.run(
-                [kubectl_path, "auth", "can-i", "create", "configmaps", "-n", ns],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and "yes" in result.stdout.lower():
-                print_success("Can create ConfigMaps in namespace")
-            else:
-                print_warning("Cannot verify ConfigMap creation permissions")
-        except Exception:
-            print_warning("Could not check permissions")
+        for resource in resources:
+            try:
+                result = subprocess.run(
+                    [kubectl_path, "auth", "can-i", "create", resource, "-n", ns],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and "yes" in result.stdout.lower():
+                    print_success(f"Can create {resource} in namespace")
+                else:
+                    print_warning(f"Cannot verify {resource} creation permissions")
+            except (OSError, subprocess.SubprocessError):
+                print_warning(f"Could not check {resource} permissions")
 
     # Layer 6: Database connectivity
     if not skip_connectivity:
@@ -1150,12 +1190,24 @@ def results(
                 raise typer.Exit(1)
     except typer.Exit:
         raise
-    except Exception:
-        # Fall back to local results
+    except Exception as e:
+        # The backend could not be queried (unreachable cluster, expired
+        # credentials, container runtime down). Stored results may still exist,
+        # so try those, but never let the real cause vanish: reporting
+        # "No results found" for an auth failure sends the user hunting in
+        # entirely the wrong place.
         summary = load_results(test_id, results_dir)
         if not summary:
-            console.print("[red]No results found.[/red]")
+            print_error(f"Could not read results from the backend: {e}")
+            console.print(
+                f"[red]No stored results for '{test_id}' either.[/red]\n"
+                f"If the backend is reachable, check that the test ID is correct."
+            )
             raise typer.Exit(1)
+        print_warning(
+            f"Could not reach the backend ({type(e).__name__}); "
+            f"showing previously stored results."
+        )
 
     if json_output:
         console.print(json_mod.dumps(summary, indent=2))
