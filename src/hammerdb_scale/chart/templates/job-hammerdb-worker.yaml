@@ -232,10 +232,10 @@ spec:
 
         volumeMounts:
         - name: scripts
-          # Must match HAMMERDB_HOME in the image, since entrypoint.sh looks
-          # for its TCL scripts there. Override global.hammerdbHome when using
-          # an image built with a different HAMMERDB_VERSION.
-          mountPath: {{ printf "%s/scripts" ($.Values.global.hammerdbHome | default "/opt/HammerDB-6.0") }}
+          # entrypoint.sh searches for its scripts, so this need not match
+          # the image's HAMMERDB_HOME exactly. Set global.hammerdbHome to pin
+          # it for an image built with a different HAMMERDB_VERSION.
+          mountPath: {{ printf "%s/scripts" ($.Values.global.hammerdbHome | default "/opt/HammerDB-5.0") }}
 
       volumes:
       - name: scripts

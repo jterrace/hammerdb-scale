@@ -35,7 +35,33 @@ if [ -z "$HAMMERDB_HOME" ] || [ ! -x "$HAMMERDB_HOME/hammerdbcli" ]; then
     exit 1
 fi
 export HAMMERDB_HOME
-SCRIPT_DIR="$HAMMERDB_HOME/scripts"
+
+# Resolve the TCL script directory independently of HAMMERDB_HOME.
+#
+# The scripts are mounted in by the orchestrator (a ConfigMap on Kubernetes, a
+# bind mount for containers), and the mount path is chosen by the chart while
+# HAMMERDB_HOME is baked into the image. Those two can disagree: a 6.0-aware
+# chart mounting into a 5.0 image lands the scripts somewhere this script would
+# never look, and the pod fails with a confusing "script not found".
+#
+# Rather than requiring exact agreement, search the candidate locations. This
+# keeps any chart version working against any image version.
+if [ -n "$HAMMERDB_SCRIPT_DIR" ]; then
+    SCRIPT_DIR="$HAMMERDB_SCRIPT_DIR"
+else
+    SCRIPT_DIR=""
+    for candidate in "$HAMMERDB_HOME/scripts" /opt/HammerDB-*/scripts /scripts; do
+        # A directory only counts if it holds mounted TCL scripts.
+        if compgen -G "$candidate/*.tcl" > /dev/null 2>&1; then
+            SCRIPT_DIR="$candidate"
+            break
+        fi
+    done
+    # Fall back to the conventional path so the error message below is sensible.
+    SCRIPT_DIR="${SCRIPT_DIR:-$HAMMERDB_HOME/scripts}"
+fi
+log "Using HammerDB at: $HAMMERDB_HOME"
+log "Using scripts from: $SCRIPT_DIR"
 
 # Ensure all required environment variables are set
 if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ] || [ -z "$HOST" ] || [ -z "$BENCHMARK" ]; then

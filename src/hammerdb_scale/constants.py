@@ -11,11 +11,18 @@ DEFAULT_NAMESPACE = "hammerdb"
 # CLI phase -> Helm/entrypoint phase
 PHASE_MAP = {"build": "build", "run": "load"}
 
-# HammerDB version shipped in the default images, and where it installs to.
-# entrypoint.sh reads HAMMERDB_HOME from the image; this is the fallback used
-# when rendering the chart, and must match the image's ARG HAMMERDB_VERSION.
+# The HammerDB version this repo builds images with.
 DEFAULT_HAMMERDB_VERSION = "6.0"
-DEFAULT_HAMMERDB_HOME = f"/opt/HammerDB-{DEFAULT_HAMMERDB_VERSION}"
+
+# Where the chart mounts TCL scripts by default.
+#
+# This deliberately tracks the *published* image, which is still 5.0, not the
+# version we build locally. entrypoint.sh searches for its scripts rather than
+# requiring an exact match, so a mismatch is tolerated either way; but pointing
+# the default at a path the published image does not have would break every
+# out-of-the-box Kubernetes run. Move this to 6.0 when 6.0 images are published.
+PUBLISHED_HAMMERDB_VERSION = "5.0"
+DEFAULT_HAMMERDB_HOME = f"/opt/HammerDB-{PUBLISHED_HAMMERDB_VERSION}"
 
 DEFAULT_RESULTS_DIR = "results"
 DEFAULT_JOB_TTL = 86400
