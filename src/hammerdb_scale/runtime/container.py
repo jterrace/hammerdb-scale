@@ -23,7 +23,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hammerdb_scale.constants import HammerDBScaleError, get_chart_path
+from hammerdb_scale.constants import PHASE_MAP, HammerDBScaleError, get_chart_path
 from hammerdb_scale.runtime.base import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -112,8 +112,18 @@ class ContainerBackend:
         return path
 
     @staticmethod
-    def _container_name(phase: str, index: int, test_id: str) -> str:
-        return f"hdb-{phase}-{index:02d}-{test_id}"
+    def _normalise_phase(phase: str) -> str:
+        """Map the CLI phase onto the label the Kubernetes path records.
+
+        The CLI says "run" but Helm and the entrypoint both record "load".
+        Containers must use the same vocabulary or callers that filter by phase
+        silently find nothing.
+        """
+        return PHASE_MAP.get(phase, phase)
+
+    @classmethod
+    def _container_name(cls, phase: str, index: int, test_id: str) -> str:
+        return f"hdb-{cls._normalise_phase(phase)}-{index:02d}-{test_id}"
 
     # --- Backend protocol ---
 
@@ -151,6 +161,7 @@ class ContainerBackend:
         if pull_policy == "Always" and not dry_run:
             self._run(["pull", image], timeout=1800, check=False)
 
+        label_phase = self._normalise_phase(phase)
         names: list[str] = []
         for index, (target, env) in enumerate(zip(targets, env_per_target)):
             name = self._container_name(phase, index, test_id)
@@ -163,7 +174,7 @@ class ContainerBackend:
                 name,
                 "--label", f"{LABEL_MANAGED}={MANAGED_VALUE}",
                 "--label", f"{LABEL_TEST_ID}={test_id}",
-                "--label", f"{LABEL_PHASE}={phase}",
+                "--label", f"{LABEL_PHASE}={label_phase}",
                 "--label", f"{LABEL_TARGET}={target['name']}",
                 "--label", f"{LABEL_TARGET_HOST}={target['host']}",
                 "--label", f"{LABEL_DB_TYPE}={target['type']}",
@@ -234,7 +245,9 @@ class ContainerBackend:
             "--filter", f"label={LABEL_TEST_ID}={test_id}",
         ]
         if phase:
-            filters.extend(["--filter", f"label={LABEL_PHASE}={phase}"])
+            filters.extend(
+                ["--filter", f"label={LABEL_PHASE}={self._normalise_phase(phase)}"]
+            )
 
         result = self._run(
             ["ps", "--all", "--format", "json"] + filters, check=False
@@ -395,6 +408,34 @@ class ContainerBackend:
         if not workload_names:
             return
         self._run(["wait"] + workload_names, timeout=timeout, check=False)
+
+    def find_test_ids(self) -> list[str]:
+        """List test IDs that have managed containers, most recent first."""
+        result = self._run(
+            [
+                "ps",
+                "--all",
+                "--filter",
+                f"label={LABEL_MANAGED}={MANAGED_VALUE}",
+                "--format",
+                "json",
+            ],
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        seen: list[str] = []
+        for entry in self._parse_ps_json(result.stdout):
+            labels = entry.get("Labels") or {}
+            if isinstance(labels, str):
+                labels = dict(
+                    pair.split("=", 1) for pair in labels.split(",") if "=" in pair
+                )
+            test_id = labels.get(LABEL_TEST_ID)
+            if test_id and test_id not in seen:
+                seen.append(test_id)
+        return seen
 
 
 def _parse_ts(value: str) -> datetime | None:

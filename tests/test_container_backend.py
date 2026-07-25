@@ -166,8 +166,29 @@ class TestWorkloadMapping:
         assert workload.index == 0
 
 
+class TestPhaseNormalisation:
+    """The CLI says "run"; Helm, the entrypoint and the labels all say "load".
+
+    Regression: containers were labelled phase=run while callers filtered on
+    phase=load, so --wait never saw them finish and timed out.
+    """
+
+    def test_run_becomes_load(self):
+        assert ContainerBackend._normalise_phase("run") == "load"
+
+    def test_build_is_unchanged(self):
+        assert ContainerBackend._normalise_phase("build") == "build"
+
+    def test_load_is_idempotent(self):
+        assert ContainerBackend._normalise_phase("load") == "load"
+
+
 class TestNaming:
     def test_matches_kubernetes_job_naming(self):
-        """Names must line up with the Helm chart's job names."""
-        assert ContainerBackend._container_name("run", 0, "abc") == "hdb-run-00-abc"
+        """Names must line up with the Helm chart's job names.
+
+        Helm renders hdb-<phase>-<NN>-<hash> with phase already mapped to
+        "load", so the container names must map it too.
+        """
+        assert ContainerBackend._container_name("run", 0, "abc") == "hdb-load-00-abc"
         assert ContainerBackend._container_name("build", 11, "abc") == "hdb-build-11-abc"

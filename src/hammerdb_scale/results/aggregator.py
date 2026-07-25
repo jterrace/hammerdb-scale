@@ -9,15 +9,6 @@ from pathlib import Path
 
 from hammerdb_scale.config.schema import HammerDBScaleConfig
 from hammerdb_scale.constants import VERSION
-from hammerdb_scale.k8s.jobs import (
-    discover_jobs,
-    get_job_database_type,
-    get_job_duration,
-    get_job_logs,
-    get_job_status,
-    get_job_target_host,
-    get_job_target_name,
-)
 from hammerdb_scale.results.parsers import get_parser
 
 
@@ -137,28 +128,25 @@ def _parse_pure_summary_from_log(log_text: str) -> dict:
 
 def aggregate_results(
     config: HammerDBScaleConfig,
-    namespace: str,
+    backend,
     test_id: str,
     benchmark: str,
     results_dir: Path = Path("./results"),
 ) -> dict:
-    """Aggregate results from all jobs for a test run."""
-    # Determine phase to look for (run jobs have phase=load in Helm)
-    jobs = discover_jobs(namespace, test_id, phase="load")
-    if not jobs:
-        jobs = discover_jobs(namespace, test_id, phase="run")
-    if not jobs:
-        jobs = discover_jobs(namespace, test_id)
+    """Aggregate results from all workloads for a test run.
 
-    # Sort jobs by target index
-    def _sort_key(j):
-        labels = j.get("metadata", {}).get("labels", {})
-        try:
-            return int(labels.get("hammerdb.io/target-index", "99"))
-        except ValueError:
-            return 99
+    ``backend`` is any object satisfying the Backend protocol, so this works
+    identically for Kubernetes Jobs and local containers.
+    """
+    # The run phase is recorded as "load" by the entrypoint; fall back through
+    # the other spellings for older runs.
+    workloads = backend.list_workloads(test_id, phase="load")
+    if not workloads:
+        workloads = backend.list_workloads(test_id, phase="run")
+    if not workloads:
+        workloads = backend.list_workloads(test_id)
 
-    jobs.sort(key=_sort_key)
+    workloads = sorted(workloads, key=lambda w: w.index)
 
     # Determine db type
     db_type = "oracle"
@@ -170,17 +158,15 @@ def aggregate_results(
     logs_dict: dict[str, str] = {}
     pure_metrics = None
 
-    for i, job in enumerate(jobs):
-        job_name = job.get("metadata", {}).get("name", "")
-        target_name = get_job_target_name(job)
-        target_host = get_job_target_host(job)
-        job_db_type = get_job_database_type(job)
-        if job_db_type != "unknown":
-            db_type = job_db_type
+    for i, w in enumerate(workloads):
+        target_name = w.target_name
+        target_host = w.target_host
+        if w.database_type != "unknown":
+            db_type = w.database_type
 
-        status = get_job_status(job)
-        duration = get_job_duration(job)
-        log_text = get_job_logs(namespace, job_name)
+        status = w.status
+        duration = w.duration_seconds
+        log_text = backend.get_logs(w.name)
 
         logs_dict[target_name] = log_text
 
