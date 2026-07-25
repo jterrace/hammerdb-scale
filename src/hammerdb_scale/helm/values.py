@@ -42,9 +42,10 @@ def generate_helm_values(
                 "tag": default_image.tag,
                 "pullPolicy": default_image.pull_policy.value,
             },
-            # Where the chart mounts the TCL scripts. Must match HAMMERDB_HOME
-            # in the image or entrypoint.sh will not find its scripts.
+            # Where the chart mounts the TCL scripts. entrypoint.sh searches
+            # for them, so this need not match the image's HAMMERDB_HOME.
             "hammerdbHome": default_image.hammerdb_home or DEFAULT_HAMMERDB_HOME,
+            "securityContext": {"enabled": config.kubernetes.security_context},
             "resources": {
                 "requests": config.resources.requests.model_dump(),
                 "limits": config.resources.limits.model_dump(),
@@ -65,6 +66,7 @@ def generate_helm_values(
         },
         "kubernetes": {
             "job_ttl": config.kubernetes.job_ttl,
+            "useSecrets": config.kubernetes.use_secrets,
         },
     }
 

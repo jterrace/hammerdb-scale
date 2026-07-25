@@ -422,6 +422,11 @@ def validate(
     skip_connectivity: bool = typer.Option(
         False, "--skip-connectivity", help="Skip network connectivity checks."
     ),
+    from_cluster: bool = typer.Option(
+        False,
+        "--from-cluster",
+        help="Test connectivity from where the benchmark runs, not this machine.",
+    ),
 ) -> None:
     """Multi-layer validation with clear, actionable output."""
     config_path = file or _state.get("file")
@@ -579,6 +584,15 @@ def validate(
         conn_failures = _check_connectivity(config)
         if conn_failures:
             errors_found = True
+
+        if from_cluster:
+            if _check_connectivity_from_cluster(config, namespace=None):
+                errors_found = True
+        else:
+            console.print(
+                "\n[dim]Checked from this machine. The benchmark runs elsewhere; "
+                "use --from-cluster to test from there.[/dim]"
+            )
     else:
         console.print("\n[dim]Skipping connectivity checks (--skip-connectivity)[/dim]")
 
@@ -591,6 +605,44 @@ def validate(
         raise typer.Exit(1)
     else:
         console.print(f"\nValidation complete: {warning_count} warning(s), 0 errors.")
+
+
+def _check_connectivity_from_cluster(
+    config: HammerDBScaleConfig, namespace: Optional[str]
+) -> int:
+    """Probe the databases from where the benchmark actually runs.
+
+    Passing the workstation check proves nothing about the pod's network
+    position, so this repeats it from there. Returns the failure count.
+    """
+    from hammerdb_scale.runtime import get_backend
+    from hammerdb_scale.runtime.preflight import (
+        check_from_container,
+        check_from_kubernetes,
+    )
+
+    image_cfg = config.targets.defaults.image
+    image = f"{image_cfg.repository}:{image_cfg.tag}"
+    backend = get_backend(config, namespace)
+
+    console.print(f"\nChecking connectivity from {backend.name}...")
+    try:
+        if backend.name == "kubernetes":
+            results = check_from_kubernetes(config, backend.namespace, image)
+        else:
+            results = check_from_container(config, backend.runtime, image)
+    except Exception as e:
+        print_error(f"Could not run the in-cluster check: {e}")
+        return 1
+
+    failures = 0
+    for entry in results:
+        if entry.get("ok"):
+            print_success(f"{entry['name']}  reachable from {backend.name}")
+        else:
+            print_error(f"{entry['name']}  {entry.get('error', 'unreachable')}")
+            failures += 1
+    return failures
 
 
 def _check_connectivity(config: HammerDBScaleConfig) -> int:

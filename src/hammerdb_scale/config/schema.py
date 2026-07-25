@@ -183,6 +183,13 @@ class ResourcesConfig(BaseModel):
 class KubernetesConfig(BaseModel):
     namespace: str = "hammerdb"
     job_ttl: int = Field(default=86400, ge=0)
+    # Emit a restricted-compliant securityContext on the Job pods. Needed on
+    # plain Kubernetes clusters enforcing the restricted Pod Security Standard.
+    # OpenShift injects an equivalent context via its SCC either way.
+    security_context: bool = True
+    # Pass database credentials through a Secret rather than plain env values
+    # in the Job spec, where `kubectl describe job` would expose them.
+    use_secrets: bool = True
 
 
 class ContainerConfig(BaseModel):
@@ -229,20 +236,22 @@ class HammerDBScaleConfig(BaseModel):
     storage_metrics: StorageMetricsConfig = StorageMetricsConfig()
 
     @model_validator(mode="after")
-    def validate_database_type_config(self) -> "HammerDBScaleConfig":
-        """Ensure the active database type has its config block present."""
+    def apply_database_type_defaults(self) -> "HammerDBScaleConfig":
+        """Fill in the database-specific block when it was not supplied.
+
+        Every field in OracleConfig and MssqlConfig has a working default, so
+        requiring the block was pure boilerplate: it forced roughly 15 lines of
+        config that only restated the defaults. Omitting it now means "use the
+        defaults", which is what lets a minimal config be a dozen lines.
+
+        Oracle is the exception worth noting: its schema passwords default to
+        empty and fall back to the target password at render time.
+        """
         defaults = self.targets.defaults
-        db_type = defaults.type
-        if db_type == DatabaseType.oracle and defaults.oracle is None:
-            raise ValueError(
-                "targets.defaults.type is 'oracle' but targets.defaults.oracle "
-                "is not configured. Add an oracle: block under targets.defaults."
-            )
-        if db_type == DatabaseType.mssql and defaults.mssql is None:
-            raise ValueError(
-                "targets.defaults.type is 'mssql' but targets.defaults.mssql "
-                "is not configured. Add an mssql: block under targets.defaults."
-            )
+        if defaults.type == DatabaseType.oracle and defaults.oracle is None:
+            defaults.oracle = OracleConfig()
+        if defaults.type == DatabaseType.mssql and defaults.mssql is None:
+            defaults.mssql = MssqlConfig()
         return self
 
     @model_validator(mode="after")

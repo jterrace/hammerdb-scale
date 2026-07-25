@@ -51,10 +51,26 @@ spec:
     spec:
       hostNetwork: {{ $.Values.global.hostNetwork | default false }}
       restartPolicy: Never
+      {{- if ne (($.Values.global.securityContext).enabled | toString) "false" }}
+      # Satisfies the "restricted" Pod Security Standard so the chart is
+      # portable to plain Kubernetes clusters that enforce it. runAsUser is
+      # deliberately NOT set: OpenShift's SCC assigns an arbitrary UID from the
+      # namespace range, and hardcoding one conflicts with that.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- end }}
       containers:
       - name: hammerdb
         image: "{{ $.Values.global.image.repository }}:{{ $.Values.global.image.tag }}"
         imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+        {{- if ne (($.Values.global.securityContext).enabled | toString) "false" }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        {{- end }}
         env:
         # Test identification
         - name: TEST_RUN_ID
@@ -70,11 +86,27 @@ spec:
         - name: DATABASE_TYPE
           value: {{ $target.type | quote }}
 
-        # Database connection
+        # Database connection. Credentials come from a Secret when enabled so
+        # they are not readable via `kubectl describe job`.
+        {{- $useSecrets := ne (($.Values.kubernetes).useSecrets | toString) "false" }}
+        {{- $secretName := printf "%s-credentials" (include "hammerdb-scale-test.fullname" $) }}
+        {{- if $useSecrets }}
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-username
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-password
+        {{- else }}
         - name: USERNAME
           value: {{ $target.username | quote }}
         - name: PASSWORD
           value: {{ $target.password | quote }}
+        {{- end }}
         - name: HOST
           value: {{ $target.host | quote }}
 
@@ -124,12 +156,28 @@ spec:
           value: {{ $oracleConfig.tempTablespace }}
         - name: TPROCC_USER
           value: {{ $oracleConfig.tproccUser }}
+        {{- if $useSecrets }}
+        - name: TPROCC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tprocc-password
+        {{- else }}
         - name: TPROCC_PASSWORD
           value: {{ $oracleConfig.tproccPassword }}
+        {{- end }}
         - name: TPROCH_USER
           value: {{ $oracleConfig.tprochUser }}
+        {{- if $useSecrets }}
+        - name: TPROCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tproch-password
+        {{- else }}
         - name: TPROCH_PASSWORD
           value: {{ $oracleConfig.tprochPassword }}
+        {{- end }}
         - name: TPROCH_DEGREE_OF_PARALLEL
           value: {{ $oracleConfig.degreeOfParallel | quote }}
         {{- end }}
@@ -207,8 +255,16 @@ spec:
           value: {{ if eq $index 0 }}"true"{{ else }}"false"{{ end }}
         - name: PURE_HOST
           value: {{ $.Values.pureStorage.host | quote }}
+        {{- if $useSecrets }}
+        - name: PURE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: pure-api-token
+        {{- else }}
         - name: PURE_API_TOKEN
           value: {{ $.Values.pureStorage.apiToken | quote }}
+        {{- end }}
         {{- if $.Values.pureStorage.volume }}
         - name: PURE_VOLUME
           value: {{ $.Values.pureStorage.volume | quote }}

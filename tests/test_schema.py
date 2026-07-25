@@ -181,18 +181,35 @@ class TestImageWarnings:
 
 
 class TestDatabaseTypeValidation:
-    def test_oracle_type_requires_oracle_block(self):
+    """An omitted database block means "use the defaults".
+
+    It used to be a hard error, which forced ~15 lines of config that only
+    restated values the schema already defaults. Every field in OracleConfig
+    and MssqlConfig has a working default, so requiring it bought nothing.
+    """
+
+    def test_oracle_block_is_filled_in_when_omitted(self):
         data = _minimal_config()
         del data["targets"]["defaults"]["oracle"]
-        with pytest.raises(ValidationError, match="targets.defaults.oracle"):
-            HammerDBScaleConfig(**data)
+        config = HammerDBScaleConfig(**data)
+        assert config.targets.defaults.oracle is not None
+        assert config.targets.defaults.oracle.port == 1521
+        assert config.targets.defaults.oracle.service == "ORCLPDB"
 
-    def test_mssql_type_requires_mssql_block(self):
+    def test_mssql_block_is_filled_in_when_omitted(self):
         data = _minimal_config()
         data["targets"]["defaults"]["type"] = "mssql"
         del data["targets"]["defaults"]["oracle"]
-        with pytest.raises(ValidationError, match="targets.defaults.mssql"):
-            HammerDBScaleConfig(**data)
+        config = HammerDBScaleConfig(**data)
+        assert config.targets.defaults.mssql is not None
+        assert config.targets.defaults.mssql.port == 1433
+
+    def test_explicit_block_is_not_overwritten(self):
+        data = _minimal_config()
+        data["targets"]["defaults"]["oracle"] = {"service": "CUSTOM", "port": 1600}
+        config = HammerDBScaleConfig(**data)
+        assert config.targets.defaults.oracle.service == "CUSTOM"
+        assert config.targets.defaults.oracle.port == 1600
 
     def test_mssql_type_with_mssql_block_valid(self):
         data = _minimal_config()
