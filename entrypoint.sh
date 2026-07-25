@@ -99,8 +99,6 @@ case "$DATABASE_TYPE" in
         ;;
     postgres)
         log "Database: PostgreSQL"
-        log "ERROR: PostgreSQL support not yet implemented"
-        exit 1
         ;;
     oracle)
         log "Database: Oracle"
@@ -227,25 +225,43 @@ elif [[ "$DATABASE_TYPE" == "oracle" ]]; then
         log "ERROR: Unknown BENCHMARK: '$BENCHMARK'. Supported: tprocc, tproch"
         exit 1
     fi
-# EXTENSION POINT: Add PostgreSQL script selection here
-# elif [[ "$DATABASE_TYPE" == "postgres" ]]; then
-#     if [[ "$BENCHMARK" == "tprocc" ]]; then
-#         case "$RUN_MODE" in
-#             build)
-#                 SCRIPT_NAME="build_schema_tprocc_pg.tcl"
-#                 ;;
-#             load)
-#                 SCRIPT_NAME="load_test_tprocc_pg.tcl"
-#                 ;;
-#             parse)
-#                 SCRIPT_NAME="parse_output_tprocc_pg.tcl"
-#                 ;;
-#         esac
-#     fi
-
-# EXTENSION POINT: Add Oracle script selection here
-# elif [[ "$DATABASE_TYPE" == "oracle" ]]; then
-#     ...
+elif [[ "$DATABASE_TYPE" == "postgres" ]]; then
+    if [[ "$BENCHMARK" == "tprocc" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tprocc.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tprocc.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tprocc.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    elif [[ "$BENCHMARK" == "tproch" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tproch.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tproch.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tproch.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    else
+        log "ERROR: Unknown BENCHMARK: '$BENCHMARK'. Supported: tprocc, tproch"
+        exit 1
+    fi
 
 # EXTENSION POINT: Add MySQL script selection here
 # elif [[ "$DATABASE_TYPE" == "mysql" ]]; then

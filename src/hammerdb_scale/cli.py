@@ -755,6 +755,34 @@ def _check_connectivity(config: HammerDBScaleConfig) -> int:
             except Exception as e:
                 return (name, False, f"{host}:{port}  {e}")
 
+        elif db_type == "postgres":
+            pg_cfg = target.get("postgres", {})
+            port = pg_cfg.get("port", 5432)
+            try:
+                import psycopg2
+
+                conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    user=username,
+                    password=password,
+                    dbname="postgres",
+                    connect_timeout=10,
+                )
+                with conn.cursor() as cur:
+                    cur.execute("select version()")
+                    server = cur.fetchone()[0].split(",")[0]
+                conn.close()
+                return (name, True, f"{host}:{port}  Connected ({server})")
+            except ImportError:
+                return (
+                    name,
+                    False,
+                    "psycopg2 not installed. Install with: pip install psycopg2-binary",
+                )
+            except Exception as e:
+                return (name, False, f"{host}:{port}  {e}")
+
         return (name, False, f"Unknown database type: {db_type}")
 
     failures = 0

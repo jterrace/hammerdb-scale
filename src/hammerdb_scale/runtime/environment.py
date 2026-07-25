@@ -91,6 +91,8 @@ def build_target_env(
         env.update(_mssql_connection_env(target, mssql_cfg))
     elif db_type == "oracle":
         env.update(_oracle_env(target))
+    elif db_type == "postgres":
+        env.update(_postgres_env(target, benchmark))
 
     if benchmark == "tprocc":
         env.update(_tprocc_env(config, target, db_type))
@@ -139,6 +141,37 @@ def _oracle_env(target: dict) -> dict[str, str]:
     }
     if oracle.get("sid"):
         env["ORACLE_SID"] = oracle["sid"]
+    return env
+
+
+def _postgres_env(target: dict, benchmark: str) -> dict[str, str]:
+    """PostgreSQL connection and schema variables."""
+    pg = target.get("postgres", {})
+    tprocc = pg.get("tprocc", {})
+    tproch = pg.get("tproch", {})
+
+    env = {
+        "PG_PORT": str(pg.get("port", 5432)),
+        "PG_SSLMODE": pg.get("sslmode", "prefer"),
+    }
+    if pg.get("tablespace"):
+        env["PG_TABLESPACE"] = pg["tablespace"]
+
+    if benchmark == "tprocc":
+        env["TPROCC_USER"] = tprocc.get("user") or "tpcc"
+        env["TPROCC_PASSWORD"] = tprocc.get("password") or "tpcc"
+        env["TPROCC_DATABASE_NAME"] = tprocc.get("database_name") or "tpcc"
+        # Build and run must agree: the driver calls stored procedures that
+        # only exist if the schema was built with them.
+        env["PG_STOREDPROCS"] = _bool_str(tprocc.get("stored_procedures", True))
+        env["PG_PARTITION"] = _bool_str(tprocc.get("partition", False))
+        env["PG_VACUUM"] = _bool_str(tprocc.get("vacuum", False))
+    else:
+        env["TPROCH_USER"] = tproch.get("user") or "tpch"
+        env["TPROCH_PASSWORD"] = tproch.get("password") or "tpch"
+        env["TPROCH_DATABASE_NAME"] = tproch.get("database_name") or "tpch"
+        env["PG_MAX_PARALLEL_WORKERS"] = str(tproch.get("max_parallel_workers", 8))
+
     return env
 
 

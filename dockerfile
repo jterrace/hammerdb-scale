@@ -45,6 +45,11 @@ RUN apt-get update && \
     rm packages-microsoft-prod.deb && \
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y mssql-tools18 msodbcsql18 unixodbc unixodbc-dev && \
+    # HammerDB bundles Pgtcl but links against the system libpq at runtime;
+    # without libpq5 the PostgreSQL driver fails with
+    # "Failed to load Pgtcl - libpq.so.5: cannot open shared object file".
+    # postgresql-client provides psql for diagnostics.
+    apt-get install -y libpq5 postgresql-client && \
     echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /var/apt/cache/* /tmp/* /var/tmp/*

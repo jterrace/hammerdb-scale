@@ -198,6 +198,11 @@ class TestGetParser:
     def test_mssql_returns_mssql_parser(self):
         assert isinstance(get_parser("mssql"), MssqlParser)
 
+    def test_postgres_returns_postgres_parser(self):
+        from hammerdb_scale.results.parsers import PostgresParser
+
+        assert isinstance(get_parser("postgres"), PostgresParser)
+
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="No parser"):
-            get_parser("postgres")
+            get_parser("mysql")

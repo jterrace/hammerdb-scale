@@ -109,6 +109,8 @@ def get_chart_path() -> str:
 DEFAULT_IMAGES = {
     "oracle": "sillidata/hammerdb-scale-oracle",
     "mssql": "sillidata/hammerdb-scale",
+    # The base image already carries libpq, so PostgreSQL needs no extension.
+    "postgres": "sillidata/hammerdb-scale",
 }
 
 

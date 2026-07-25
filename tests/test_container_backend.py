@@ -17,6 +17,7 @@ from hammerdb_scale.runtime.base import (
     STATUS_RUNNING,
 )
 from hammerdb_scale.runtime.container import (
+    _created_sort_key,
     LABEL_DB_TYPE,
     LABEL_INDEX,
     LABEL_TARGET,
@@ -192,3 +193,30 @@ class TestNaming:
         """
         assert ContainerBackend._container_name("run", 0, "abc") == "hdb-load-00-abc"
         assert ContainerBackend._container_name("build", 11, "abc") == "hdb-build-11-abc"
+
+
+class TestCreatedSortKey:
+    """Test-ID ordering decides which run `results` and `report` act on.
+
+    Regression: podman does not guarantee ps ordering, so a stale build run
+    surfaced ahead of the run just finished and results showed no metrics.
+    """
+
+    def test_podman_unix_timestamp(self):
+        assert _created_sort_key({"Created": 1769000000}) == 1769000000.0
+
+    def test_docker_rfc3339_string(self):
+        key = _created_sort_key({"Created": "2026-07-25T13:46:00Z"})
+        assert key > 0
+
+    def test_numeric_string(self):
+        assert _created_sort_key({"Created": "1769000000"}) == 1769000000.0
+
+    def test_missing_or_unparseable_sorts_oldest(self):
+        assert _created_sort_key({}) == float("-inf")
+        assert _created_sort_key({"Created": "nonsense"}) == float("-inf")
+
+    def test_newer_sorts_higher(self):
+        older = _created_sort_key({"Created": 1769000000})
+        newer = _created_sort_key({"Created": 1769009999})
+        assert newer > older

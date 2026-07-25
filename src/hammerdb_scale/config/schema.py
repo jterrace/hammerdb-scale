@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 class DatabaseType(str, Enum):
     oracle = "oracle"
     mssql = "mssql"
+    postgres = "postgres"
 
 
 class BenchmarkType(str, Enum):
@@ -97,6 +98,39 @@ class MssqlConfig(BaseModel):
     connection: MssqlConnectionConfig = MssqlConnectionConfig()
 
 
+# --- PostgreSQL Config Models ---
+
+
+class PostgresTproccConfig(BaseModel):
+    database_name: str = "tpcc"
+    user: str = "tpcc"
+    password: str = "tpcc"
+    # HammerDB's recommended default for PostgreSQL TPROC-C, and generally the
+    # higher-throughput form. Must match between build and run: the driver
+    # calls procedures that only exist if the schema was built with them.
+    stored_procedures: bool = True
+    partition: bool = False
+    vacuum: bool = False
+
+
+class PostgresTprochConfig(BaseModel):
+    database_name: str = "tpch"
+    user: str = "tpch"
+    password: str = "tpch"
+    # Degree of parallelism for the query phase.
+    max_parallel_workers: int = Field(default=8, ge=1)
+
+
+class PostgresConfig(BaseModel):
+    port: int = Field(default=5432, ge=1, le=65535)
+    # PostgreSQL defaults to "prefer": TLS when the server offers it.
+    sslmode: str = "prefer"
+    # Empty means pg_default, which is the volume the data directory lives on.
+    tablespace: str = ""
+    tprocc: PostgresTproccConfig = PostgresTproccConfig()
+    tproch: PostgresTprochConfig = PostgresTprochConfig()
+
+
 # --- Image Config ---
 
 
@@ -122,6 +156,7 @@ class TargetHost(BaseModel):
     image: Optional[ImageConfig] = None
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
+    postgres: Optional[PostgresConfig] = None
 
 
 class TargetDefaults(BaseModel):
@@ -131,6 +166,7 @@ class TargetDefaults(BaseModel):
     image: ImageConfig = ImageConfig()
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
+    postgres: Optional[PostgresConfig] = None
 
 
 class TargetsConfig(BaseModel):
@@ -252,6 +288,8 @@ class HammerDBScaleConfig(BaseModel):
             defaults.oracle = OracleConfig()
         if defaults.type == DatabaseType.mssql and defaults.mssql is None:
             defaults.mssql = MssqlConfig()
+        if defaults.type == DatabaseType.postgres and defaults.postgres is None:
+            defaults.postgres = PostgresConfig()
         return self
 
     @model_validator(mode="after")

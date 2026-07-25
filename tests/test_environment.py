@@ -213,3 +213,62 @@ class TestTprochEnv:
             hammerdb=HammerDBConfig(tproch=TprochConfig(scale_factor=100))
         )
         assert _env_for(config, benchmark="tproch")["TPROCH_SCALE_FACTOR"] == "100"
+
+
+def _postgres_config(**overrides) -> HammerDBScaleConfig:
+    from hammerdb_scale.config.schema import PostgresConfig, PostgresTproccConfig
+
+    base = dict(
+        name="pg",
+        targets=TargetsConfig(
+            defaults=TargetDefaults(
+                type="postgres",
+                username="postgres",
+                password="secret",
+                postgres=PostgresConfig(
+                    port=5432,
+                    tprocc=PostgresTproccConfig(
+                        database_name="tpcc", user="tpcc", password="tpccpw"
+                    ),
+                ),
+            ),
+            hosts=[TargetHost(name="pg-01", host="10.0.0.3")],
+        ),
+    )
+    base.update(overrides)
+    return HammerDBScaleConfig(**base)
+
+
+class TestPostgresEnv:
+    def test_connection_vars(self):
+        env = _env_for(_postgres_config())
+        assert env["HOST"] == "10.0.0.3"
+        assert env["PG_PORT"] == "5432"
+        assert env["DATABASE_TYPE"] == "postgres"
+        assert env["TPROCC_DRIVER"] == "pg"
+
+    def test_schema_credentials(self):
+        env = _env_for(_postgres_config())
+        assert env["TPROCC_USER"] == "tpcc"
+        assert env["TPROCC_PASSWORD"] == "tpccpw"
+        assert env["TPROCC_DATABASE_NAME"] == "tpcc"
+
+    def test_stored_procedures_default_on(self):
+        """HammerDB's recommended default for PostgreSQL TPROC-C."""
+        assert _env_for(_postgres_config())["PG_STOREDPROCS"] == "true"
+
+    def test_stored_procedures_can_be_disabled(self):
+        config = _postgres_config()
+        config.targets.defaults.postgres.tprocc.stored_procedures = False
+        assert _env_for(config)["PG_STOREDPROCS"] == "false"
+
+    def test_no_other_engine_vars_leak_in(self):
+        env = _env_for(_postgres_config())
+        assert "ORACLE_SERVICE" not in env
+        assert "MSSQLS_PORT" not in env
+
+    def test_tproch_uses_tproch_credentials(self):
+        env = _env_for(_postgres_config(), benchmark="tproch")
+        assert env["TPROCH_USER"] == "tpch"
+        assert env["TPROCH_DATABASE_NAME"] == "tpch"
+        assert "PG_STOREDPROCS" not in env

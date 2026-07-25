@@ -448,7 +448,13 @@ class ContainerBackend:
         self._run(["wait"] + workload_names, timeout=timeout, check=False)
 
     def find_test_ids(self) -> list[str]:
-        """List test IDs that have managed containers, most recent first."""
+        """List test IDs that have managed containers, most recent first.
+
+        Ordering matters: `results` and `report` act on the first entry, so a
+        stale build run appearing ahead of the run the user just finished sends
+        them to the wrong data. The runtime does not guarantee ps ordering, so
+        sort explicitly by container creation time.
+        """
         result = self._run(
             [
                 "ps",
@@ -463,7 +469,7 @@ class ContainerBackend:
         if result.returncode != 0 or not result.stdout.strip():
             return []
 
-        seen: list[str] = []
+        newest: dict[str, float] = {}
         for entry in self._parse_ps_json(result.stdout):
             labels = entry.get("Labels") or {}
             if isinstance(labels, str):
@@ -471,9 +477,33 @@ class ContainerBackend:
                     pair.split("=", 1) for pair in labels.split(",") if "=" in pair
                 )
             test_id = labels.get(LABEL_TEST_ID)
-            if test_id and test_id not in seen:
-                seen.append(test_id)
-        return seen
+            if not test_id:
+                continue
+            created = _created_sort_key(entry)
+            if created > newest.get(test_id, float("-inf")):
+                newest[test_id] = created
+
+        return sorted(newest, key=lambda t: newest[t], reverse=True)
+
+
+def _created_sort_key(entry: dict) -> float:
+    """Creation time of a ps entry as a sortable number.
+
+    podman reports `Created` as a unix timestamp, docker as an RFC3339 string.
+    Unparseable entries sort oldest so they never displace a known-good one.
+    """
+    created = entry.get("Created") or entry.get("CreatedAt")
+    if isinstance(created, (int, float)):
+        return float(created)
+    if isinstance(created, str):
+        parsed = _parse_ts(created)
+        if parsed:
+            return parsed.timestamp()
+        try:
+            return float(created)
+        except ValueError:
+            return float("-inf")
+    return float("-inf")
 
 
 def _parse_ts(value: str) -> datetime | None:

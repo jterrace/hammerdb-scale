@@ -182,6 +182,57 @@ spec:
           value: {{ $oracleConfig.degreeOfParallel | quote }}
         {{- end }}
 
+        {{- if eq $target.type "postgres" }}
+        # PostgreSQL connection config
+        - name: PG_PORT
+          value: {{ $target.postgres.port | default 5432 | quote }}
+        - name: PG_SSLMODE
+          value: {{ $target.postgres.sslmode | default "prefer" | quote }}
+        {{- if $target.postgres.tablespace }}
+        - name: PG_TABLESPACE
+          value: {{ $target.postgres.tablespace | quote }}
+        {{- end }}
+        {{- if eq $.Values.testRun.benchmark "tprocc" }}
+        - name: TPROCC_USER
+          value: {{ $target.postgres.tprocc.user | default "tpcc" | quote }}
+        - name: TPROCC_DATABASE_NAME
+          value: {{ $target.postgres.tprocc.database_name | default "tpcc" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tprocc-password
+        {{- else }}
+        - name: TPROCC_PASSWORD
+          value: {{ $target.postgres.tprocc.password | default "tpcc" | quote }}
+        {{- end }}
+        - name: PG_STOREDPROCS
+          value: {{ $target.postgres.tprocc.stored_procedures | default true | quote }}
+        - name: PG_PARTITION
+          value: {{ $target.postgres.tprocc.partition | default false | quote }}
+        - name: PG_VACUUM
+          value: {{ $target.postgres.tprocc.vacuum | default false | quote }}
+        {{- else }}
+        - name: TPROCH_USER
+          value: {{ $target.postgres.tproch.user | default "tpch" | quote }}
+        - name: TPROCH_DATABASE_NAME
+          value: {{ $target.postgres.tproch.database_name | default "tpch" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tproch-password
+        {{- else }}
+        - name: TPROCH_PASSWORD
+          value: {{ $target.postgres.tproch.password | default "tpch" | quote }}
+        {{- end }}
+        - name: PG_MAX_PARALLEL_WORKERS
+          value: {{ $target.postgres.tproch.max_parallel_workers | default 8 | quote }}
+        {{- end }}
+        {{- end }}
+
         {{- if eq $.Values.testRun.benchmark "tprocc" }}
         # TPC-C Configuration (from merged config)
         {{- if eq $target.type "mssql" }}

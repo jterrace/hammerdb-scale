@@ -7,6 +7,14 @@ import json
 from datetime import datetime
 
 
+# Presentation names for the scorecard. The config carries the internal type.
+DB_DISPLAY_NAMES = {
+    "oracle": "Oracle",
+    "mssql": "SQL Server",
+    "postgres": "PostgreSQL",
+}
+
+
 def _load_chartjs() -> str:
     """Load the embedded Chart.js minified source."""
     ref = importlib.resources.files("hammerdb_scale.reports").joinpath("chartjs.min.js")
@@ -163,7 +171,7 @@ def _header_html(summary: dict) -> str:
     meta_items = [
         f"Test ID: {_escape(test_id)}",
         f"Benchmark: {benchmark.upper()}",
-        f"Database: {db_type}",
+        f"Database: {DB_DISPLAY_NAMES.get(db_type, db_type)}",
         f"Targets: {target_count}",
     ]
     if "warehouses" in cfg:
