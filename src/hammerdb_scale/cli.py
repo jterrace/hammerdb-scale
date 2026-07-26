@@ -35,7 +35,7 @@ _state: dict = {}
 
 @app.callback()
 def main(
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file path."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file path."),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output."),
 ) -> None:
     """HammerDB-Scale: orchestrate parallel database benchmarks on Kubernetes."""
@@ -466,7 +466,7 @@ def init(
 
 @app.command()
 def validate(
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
     skip_connectivity: bool = typer.Option(
         False, "--skip-connectivity", help="Skip network connectivity checks."
     ),
@@ -818,7 +818,7 @@ def build(
     benchmark: Optional[str] = typer.Option(
         None, "--benchmark", help="tprocc or tproch."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID override."),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Override namespace."
@@ -886,7 +886,7 @@ def run(
     build_first: bool = typer.Option(
         False, "--build", help="Build schemas before running."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID override."),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Override namespace."
@@ -1173,7 +1173,7 @@ def results(
         None, "--benchmark", help="tprocc or tproch."
     ),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID."),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Namespace."
     ),
@@ -1262,7 +1262,7 @@ def report(
         None, "-o", "--output", help="Output HTML file."
     ),
     open_browser: bool = typer.Option(False, "--open", help="Open in default browser."),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
 ) -> None:
     """Generate a self-contained HTML scorecard."""
     import webbrowser
@@ -1363,7 +1363,7 @@ def clean(
     benchmark: Optional[str] = typer.Option(
         None, "--benchmark", help="Required for --database."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(None, "-f", "-c", "--file", "--config", help="Config file."),
     target: Optional[str] = typer.Option(
         None, "--target", help="Clean specific target only."
     ),

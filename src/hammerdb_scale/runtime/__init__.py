@@ -53,6 +53,7 @@ def get_backend(config, namespace: str | None = None) -> Backend:
             hammerdb_home=config.targets.defaults.image.hammerdb_home,
             memory_limit=limits.memory,
             cpu_limit=limits.cpu,
+            deployment_name=config.name,
         )
 
     from hammerdb_scale.runtime.kubernetes import KubernetesBackend

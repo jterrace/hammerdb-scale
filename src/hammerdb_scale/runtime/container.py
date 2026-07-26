@@ -44,6 +44,10 @@ LABEL_TARGET = "hammerdb.io/target-name"
 LABEL_TARGET_HOST = "hammerdb.io/target-host"
 LABEL_DB_TYPE = "hammerdb.io/database-type"
 LABEL_INDEX = "hammerdb.io/target-index"
+# Mirrors the Kubernetes label of the same name. Without it, every run on a
+# host shares one namespace, so `results` after one config's run can pick up a
+# different config's containers.
+LABEL_DEPLOYMENT = "hammerdb.io/deployment-name"
 
 MANAGED_VALUE = "hammerdb-scale"
 
@@ -107,6 +111,25 @@ def k8s_cpu_to_cores(value: str) -> float | None:
         return None
 
 
+def selinux_is_enforcing() -> bool:
+    """True when the host runs SELinux and would block an unlabelled mount.
+
+    Only such hosts need the :z relabel suffix. Docker Desktop's VM has
+    historically rejected or mishandled it, so applying it unconditionally
+    turns the first run on a Mac into a mount error.
+    """
+    try:
+        enforce = Path("/sys/fs/selinux/enforce")
+        return enforce.exists() and enforce.read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def mount_suffix() -> str:
+    """Volume options for the read-only script mount."""
+    return "ro,z" if selinux_is_enforcing() else "ro"
+
+
 def detect_runtime(preferred: str | None = None) -> str:
     """Find an available container runtime.
 
@@ -134,6 +157,7 @@ class ContainerBackend:
         hammerdb_home: str | None = None,
         memory_limit: str | None = None,
         cpu_limit: str | None = None,
+        deployment_name: str | None = None,
     ) -> None:
         self.runtime = detect_runtime(runtime)
         self.name = self.runtime
@@ -142,6 +166,21 @@ class ContainerBackend:
         self.hammerdb_home = hammerdb_home
         self.memory_limit = memory_limit
         self.cpu_limit = cpu_limit
+        self.deployment_name = deployment_name
+
+    def _scope_filters(self) -> list[str]:
+        """ps filters restricting results to this config's containers.
+
+        Containers deployed before deployment-name labelling carry no such
+        label, so scoping is applied only when a name is known; that keeps a
+        mixed host readable rather than hiding older runs entirely.
+        """
+        filters = ["--filter", f"label={LABEL_MANAGED}={MANAGED_VALUE}"]
+        if self.deployment_name:
+            filters.extend(
+                ["--filter", f"label={LABEL_DEPLOYMENT}={self.deployment_name}"]
+            )
+        return filters
 
     def _resource_args(self) -> list[str]:
         """Translate the shared `resources.limits` block for this runtime.
@@ -266,6 +305,11 @@ class ContainerBackend:
                 "--label", f"{LABEL_INDEX}={index}",
             ]
 
+            if self.deployment_name:
+                args.extend(
+                    ["--label", f"{LABEL_DEPLOYMENT}={self.deployment_name}"]
+                )
+
             if self.network:
                 args.extend(["--network", self.network])
 
@@ -283,9 +327,10 @@ class ContainerBackend:
                 args.extend(["--env-file", env_file.name])
 
                 # Mount the TCL scripts where entrypoint.sh expects them. The
-                # :ro,z suffix keeps SELinux hosts working; docker ignores z.
+                # The :z relabel is applied only where SELinux needs it; see
+                # mount_suffix().
                 mount_target = self._script_mount_target(image)
-                args.extend(["-v", f"{scripts}:{mount_target}:ro,z"])
+                args.extend(["-v", f"{scripts}:{mount_target}:{mount_suffix()}"])
                 args.append(image)
 
                 if dry_run:
@@ -506,8 +551,13 @@ class ContainerBackend:
         return (result.stdout or "") + (result.stderr or "")
 
     def remove(self, test_id: str | None = None, everything: bool = False) -> int:
-        """Remove containers for a test run, or every managed container."""
-        filters = ["--filter", f"label={LABEL_MANAGED}={MANAGED_VALUE}"]
+        """Remove containers for a test run, or every managed container.
+
+        "Everything" means everything belonging to this config, not every
+        hammerdb-scale container on the host: cleaning up one validation must
+        not delete a colleague's run.
+        """
+        filters = self._scope_filters()
         if test_id and not everything:
             filters.extend(["--filter", f"label={LABEL_TEST_ID}={test_id}"])
 
@@ -534,23 +584,39 @@ class ContainerBackend:
         stale build run appearing ahead of the run the user just finished sends
         them to the wrong data. The runtime does not guarantee ps ordering, so
         sort explicitly by container creation time.
+
+        Scoped to this config where possible. Containers created before
+        deployment-name labelling carry no such label, so an empty scoped
+        result falls back to the unscoped query rather than telling the user
+        their completed run does not exist.
         """
         result = self._run(
-            [
-                "ps",
-                "--all",
-                "--filter",
-                f"label={LABEL_MANAGED}={MANAGED_VALUE}",
-                "--format",
-                "json",
-            ],
+            ["ps", "--all"] + self._scope_filters() + ["--format", "json"],
             check=False,
         )
-        if result.returncode != 0 or not result.stdout.strip():
+        entries = (
+            self._parse_ps_json(result.stdout) if result.returncode == 0 else []
+        )
+        if not entries and self.deployment_name:
+            result = self._run(
+                [
+                    "ps",
+                    "--all",
+                    "--filter",
+                    f"label={LABEL_MANAGED}={MANAGED_VALUE}",
+                    "--format",
+                    "json",
+                ],
+                check=False,
+            )
+            entries = (
+                self._parse_ps_json(result.stdout) if result.returncode == 0 else []
+            )
+        if not entries:
             return []
 
         newest: dict[str, float] = {}
-        for entry in self._parse_ps_json(result.stdout):
+        for entry in entries:
             labels = entry.get("Labels") or {}
             if isinstance(labels, str):
                 labels = dict(

@@ -30,18 +30,29 @@ print("PROBE_RESULT:" + json.dumps(results))
 """
 
 
+# Fallback listening port per database type, used only when the config does
+# not carry one. Probing the wrong port reports a healthy fleet as unreachable,
+# which reads as "the tool is broken" rather than "the check is wrong".
+_DEFAULT_PORTS = {"oracle": 1521, "mssql": 1433, "postgres": 5432}
+
+
 def _target_endpoints(config) -> list[tuple[str, str, int]]:
     """Build (name, host, port) for every target."""
     from hammerdb_scale.config.defaults import expand_targets
 
+    defaults = config.targets.defaults
     endpoints = []
     for target in expand_targets(config):
-        if target["type"] == "oracle":
-            port = target.get("oracle", {}).get("port", 1521)
-        else:
-            mssql = config.targets.defaults.mssql
-            port = mssql.port if mssql else 1433
-        endpoints.append((target["name"], target["host"], int(port)))
+        db_type = target["type"]
+        fallback = _DEFAULT_PORTS.get(db_type, 1433)
+
+        # The per-target block wins; then the shared defaults block for that
+        # database; then the well-known port.
+        port = (target.get(db_type) or {}).get("port")
+        if port is None:
+            block = getattr(defaults, db_type, None)
+            port = getattr(block, "port", None) if block else None
+        endpoints.append((target["name"], target["host"], int(port or fallback)))
     return endpoints
 
 
