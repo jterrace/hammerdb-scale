@@ -126,3 +126,39 @@ class TestChartIsNotDuplicated:
         root = (REPO_ROOT / CHART_TEMPLATE).read_text()
         packaged = (REPO_ROOT / "src/hammerdb_scale/chart" / CHART_TEMPLATE).read_text()
         assert root == packaged
+
+
+class TestReleaseVersions:
+    """Chart and CLI versions must move together.
+
+    They drifted before: the chart shipped 2.0.2 against a 2.0.3 CLI, so a
+    `helm list` reported a version that did not match the tool that deployed
+    it.
+    """
+
+    def _chart_version(self) -> str:
+        text = (REPO_ROOT / "src/hammerdb_scale/chart/Chart.yaml").read_text()
+        match = re.search(r"^version:\s*(\S+)", text, re.MULTILINE)
+        assert match, "Chart.yaml must declare a version"
+        return match.group(1)
+
+    def _pyproject_version(self) -> str:
+        text = (REPO_ROOT / "pyproject.toml").read_text()
+        match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        assert match, "pyproject.toml must declare a version"
+        return match.group(1)
+
+    def test_chart_matches_pyproject(self):
+        assert self._chart_version() == self._pyproject_version()
+
+    def test_cli_reports_pyproject_version(self):
+        from hammerdb_scale.constants import VERSION
+
+        assert VERSION == self._pyproject_version()
+
+    def test_chart_appversion_tracks_published_hammerdb(self):
+        """appVersion advertises the HammerDB the published images carry."""
+        text = (REPO_ROOT / "src/hammerdb_scale/chart/Chart.yaml").read_text()
+        match = re.search(r'^appVersion:\s*"?([^"\s]+)"?', text, re.MULTILINE)
+        assert match, "Chart.yaml must declare an appVersion"
+        assert match.group(1) == PUBLISHED_HAMMERDB_VERSION

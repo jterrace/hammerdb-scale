@@ -125,8 +125,8 @@ init  →  validate  →  run --build  →  results  →  report
  │          │             │              │           │
  │          │             │              │           └─ HTML scorecard
  │          │             │              └─ aggregate TPM/NOPM/QphH
- │          │             └─ build schema + run benchmark (parallel K8s jobs)
- │          └─ check config, helm, kubectl, DB connectivity
+ │          │             └─ build schema + run benchmark (one worker per target)
+ │          └─ check config, tooling, DB connectivity
  └─ generate config interactively
 ```
 
@@ -143,7 +143,7 @@ init  →  validate  →  run --build  →  results  →  report
 | `logs` | View HammerDB output logs |
 | `results` | Aggregate and display benchmark results |
 | `report` | Generate self-contained HTML scorecard |
-| `clean` | Remove K8s resources and/or database tables |
+| `clean` | Remove workers (containers or K8s jobs) and/or database tables |
 
 ## Documentation
 
@@ -157,8 +157,8 @@ init  →  validate  →  run --build  →  results  →  report
 ## Requirements
 
 - **Python 3.10+**
-- **podman or docker** — either one; podman is preferred when both are present
-- **Database targets** — one or more Oracle, SQL Server or PostgreSQL instances reachable from the machine running the workers
+- **podman or docker**, either one. podman is preferred when both are present.
+- **Database targets**, one or more Oracle, SQL Server or PostgreSQL instances reachable from the machine running the workers
 
 That is the whole list for the default container backend. No cluster, no Helm,
 no kubectl.
@@ -167,9 +167,9 @@ no kubectl.
 
 Set `backend: kubernetes` in your config and add:
 
-- **Helm 3.x** — used to template and deploy the Jobs
-- **kubectl** — configured with a context that has access to your cluster
-- **A cluster** — with permissions to create Jobs, ConfigMaps and Secrets in your namespace
+- **Helm 3.x**, used to template and deploy the Jobs
+- **kubectl**, configured with a context that has access to your cluster
+- **A cluster** with permissions to create Jobs, ConfigMaps and Secrets in your namespace
 - Databases reachable **from the cluster**, which is not always the same as reachable from your workstation. `hammerdb-scale validate --from-cluster` checks from where the workers actually run.
 
 ### Platform support
