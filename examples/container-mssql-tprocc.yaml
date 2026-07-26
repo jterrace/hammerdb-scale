@@ -1,0 +1,82 @@
+# ============================================================================
+# SQL Server TPC-C, run from a single host with podman or docker
+# ============================================================================
+# The lowest-friction way to use this tool: no Kubernetes, no Helm, no
+# kubectl. One container per database target, all on the machine you run
+# the CLI from.
+#
+#   hammerdb-scale validate -c examples/container-mssql-tprocc.yaml
+#   hammerdb-scale run --build --wait -c examples/container-mssql-tprocc.yaml
+#   hammerdb-scale report --open -c examples/container-mssql-tprocc.yaml
+#
+# Put this host close to the databases. Driver-to-database latency counts
+# against your numbers, so a laptop over a VPN will understate your storage.
+# ============================================================================
+
+name: mssql-storage-validation
+description: "SQL Server TPC-C across 4 targets"
+default_benchmark: tprocc
+backend: podman                          # podman|docker|kubernetes
+
+container:
+  runtime: auto                          # auto picks podman, then docker
+
+targets:
+  defaults:
+    type: mssql
+    username: sa
+    password: "CHANGE-ME"
+    mssql:
+      port: 1433
+      tprocc:
+        database_name: tpcc              # created during the build phase
+        use_bcp: false                   # bulk copy load, faster but noisier
+      connection:
+        encrypt_connection: true
+        trust_server_cert: true          # accept self-signed certs
+
+  hosts:
+    - name: sql-01
+      host: "10.0.0.11"
+    - name: sql-02
+      host: "10.0.0.12"
+    - name: sql-03
+      host: "10.0.0.13"
+    - name: sql-04
+      host: "10.0.0.14"
+
+hammerdb:
+  tprocc:
+    # Warehouses drive the dataset size and therefore the build time.
+    # 100 builds in minutes; 10,000 takes hours and is roughly 1 TB per
+    # target. Build once, then run as many benchmarks as you like.
+    warehouses: 1000
+    build_virtual_users: 8               # parallelism during the build phase
+    load_virtual_users: 8                # concurrent users during the run
+    driver: timed
+    rampup: 2                            # minutes of warm-up, not measured
+    duration: 10                         # minutes of measured workload
+    all_warehouses: true
+    checkpoint: false
+    time_profile: true                   # per-transaction response percentiles
+
+# Resource limits apply to both backends: --memory/--cpus for containers,
+# pod requests and limits on Kubernetes. A worker is light, so these are
+# generous; measured usage is around 57 MB and a fifth of a core.
+resources:
+  limits:
+    memory: "2Gi"
+    cpu: "2"
+
+# ============================================================================
+# Optional: collect FlashArray metrics alongside the benchmark so array
+# latency can be read against the database's own response times.
+# ============================================================================
+storage_metrics:
+  enabled: false
+  # provider: pure
+  # pure:
+  #   host: ""                           # FlashArray management IP
+  #   api_token: ""                      # Settings > Users > API Tokens
+  #   poll_interval: 5
+  #   verify_ssl: false

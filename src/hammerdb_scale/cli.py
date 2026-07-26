@@ -157,7 +157,8 @@ def _build_config_yaml(
     password: str,
     oracle_config: dict | None,
     warehouses: int = 100,
-    namespace: str = "hammerdb",
+    namespace: str | None = "hammerdb",
+    backend_str: str = "kubernetes",
     storage_metrics: dict | None = None,
     build_virtual_users: int = 4,
     load_virtual_users: int = 4,
@@ -195,6 +196,20 @@ def _build_config_yaml(
         user: "tpch"                       # TPC-H schema owner (created during build)
         password: "{oracle_config["tproch"]["password"]}"
         degree_of_parallel: 8              # Oracle parallel query degree"""
+    elif db_type_str == "postgres":
+        db_defaults = """    postgres:
+      port: 5432
+      sslmode: prefer                      # prefer|require|disable
+      tprocc:
+        database_name: tpcc                # database created during build phase
+        user: tpcc                         # schema owner (created during build)
+        password: tpcc
+        stored_procedures: true            # build and drive via stored procedures
+      tproch:
+        database_name: tpch                # database created during build phase
+        user: tpch
+        password: tpch
+        max_parallel_workers: 8            # parallel workers for analytic queries"""
     else:
         db_defaults = """    mssql:
       port: 1433
@@ -269,6 +284,26 @@ storage_metrics:
   #   poll_interval: 5                   # collection interval in seconds
   #   verify_ssl: false"""
 
+    # Only the selected backend's settings are emitted. A container user who
+    # finds a Kubernetes block in their config reasonably concludes they need
+    # a cluster.
+    if backend_str == "kubernetes":
+        backend_section = f"""
+# ============================================================================
+# KUBERNETES SETTINGS
+# ============================================================================
+kubernetes:
+  namespace: {namespace or "hammerdb"}                 # namespace for benchmark jobs (must exist)
+  job_ttl: 86400                         # auto-cleanup completed jobs after N seconds (24h)"""
+    else:
+        backend_section = """
+# ============================================================================
+# CONTAINER SETTINGS
+# ============================================================================
+container:
+  runtime: auto                          # auto|podman|docker
+  # network: ""                          # attach workers to a named network"""
+
     # Assemble full config
     return f"""# ============================================================================
 # HammerDB-Scale Configuration
@@ -285,8 +320,9 @@ storage_metrics:
 # ============================================================================
 
 name: {name}
-description: "{db_type_str.upper()} {benchmark_str.upper()} benchmark — {len(hosts)} target{"s" if len(hosts) != 1 else ""}"
+description: "{db_type_str.upper()} {benchmark_str.upper()} benchmark, {len(hosts)} target{"s" if len(hosts) != 1 else ""}"
 default_benchmark: {benchmark_str}
+backend: {backend_str}                   # podman|docker|kubernetes
 
 # ============================================================================
 # DATABASE TARGETS
@@ -329,12 +365,7 @@ resources:
     memory: "{lim_memory}"
     cpu: "{lim_cpu}"
 
-# ============================================================================
-# KUBERNETES SETTINGS
-# ============================================================================
-kubernetes:
-  namespace: {namespace}                 # namespace for benchmark jobs (must exist)
-  job_ttl: 86400                         # auto-cleanup completed jobs after N seconds (24h)
+{backend_section}
 {storage_section}
 """
 

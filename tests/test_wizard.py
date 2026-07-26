@@ -144,7 +144,8 @@ class TestRunWizard:
         """Full wizard flow for Oracle TPC-C without advanced options."""
         mock_prompt.ask.side_effect = [
             "my-bench",  # deployment name
-            "1",  # oracle
+            "3",  # kubernetes backend
+            "3",  # oracle
             "1",  # tprocc
             "ora-01",  # target name
             "10.0.0.1",  # target host
@@ -182,7 +183,8 @@ class TestRunWizard:
         """Full wizard flow for MSSQL TPC-H."""
         mock_prompt.ask.side_effect = [
             "sql-test",  # deployment name
-            "2",  # mssql
+            "3",  # kubernetes backend
+            "1",  # mssql
             "2",  # tproch
             "sql-01",  # target name
             "10.0.0.5",  # target host
@@ -217,8 +219,9 @@ class TestRunWizard:
         """Wizard returns None when user declines at the write confirmation."""
         mock_prompt.ask.side_effect = [
             "test",
-            "2",
-            "1",
+            "3",  # kubernetes backend
+            "1",  # mssql
+            "1",  # tprocc
             "db-01",
             "10.0.0.1",
             "sa",
@@ -242,8 +245,9 @@ class TestRunWizard:
         """Wizard with advanced options for TPC-C."""
         mock_prompt.ask.side_effect = [
             "adv-bench",
-            "2",
-            "1",  # name, mssql, tprocc
+            "3",  # kubernetes backend
+            "1",
+            "1",  # mssql, tprocc
             "db-01",
             "10.0.0.1",  # target
             "sa",
@@ -345,3 +349,62 @@ class TestYamlOutput:
         assert "duration: 10" in yaml_str
         assert 'memory: "4Gi"' in yaml_str
         assert 'cpu: "4"' in yaml_str
+
+
+class TestBackendSelection:
+    """The wizard must not interrogate a container user about a cluster.
+
+    Asking for a Kubernetes namespace when the workers run locally is what
+    made the tool look like it required a cluster when it does not.
+    """
+
+    @patch("hammerdb_scale.wizard.Confirm")
+    @patch("hammerdb_scale.wizard.IntPrompt")
+    @patch("hammerdb_scale.wizard.Prompt")
+    def test_container_backend_skips_namespace(
+        self, mock_prompt, mock_int, mock_confirm
+    ) -> None:
+        mock_prompt.ask.side_effect = [
+            "ctr-bench",
+            "1",  # first container runtime offered
+            "1",  # mssql
+            "1",  # tprocc
+            "db-01",
+            "10.0.0.1",
+            "sa",
+            "pass",
+            # No namespace answer supplied: asking for one would raise
+            # StopIteration and fail this test, which is the point.
+        ]
+        mock_int.ask.side_effect = [1, 100]
+        mock_confirm.ask.side_effect = [False, False, True]
+
+        result = run_wizard()
+        assert result is not None
+        assert result["backend_str"] in ("podman", "docker")
+        assert result["namespace"] is None
+
+    @patch("hammerdb_scale.wizard.Confirm")
+    @patch("hammerdb_scale.wizard.IntPrompt")
+    @patch("hammerdb_scale.wizard.Prompt")
+    def test_kubernetes_backend_still_asks_for_namespace(
+        self, mock_prompt, mock_int, mock_confirm
+    ) -> None:
+        mock_prompt.ask.side_effect = [
+            "k8s-bench",
+            "3",  # kubernetes is always last
+            "1",  # mssql
+            "1",  # tprocc
+            "db-01",
+            "10.0.0.1",
+            "sa",
+            "pass",
+            "my-namespace",
+        ]
+        mock_int.ask.side_effect = [1, 100]
+        mock_confirm.ask.side_effect = [False, False, True]
+
+        result = run_wizard()
+        assert result is not None
+        assert result["backend_str"] == "kubernetes"
+        assert result["namespace"] == "my-namespace"

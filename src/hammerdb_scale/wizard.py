@@ -23,6 +23,19 @@ def _step_header(step: int, total: int, title: str, subtitle: str) -> None:
     )
 
 
+def _detect_local_runtime() -> str | None:
+    """Which container runtime is installed here, if any.
+
+    Used only to order the backend choices so the obvious answer is first.
+    """
+    import shutil
+
+    for candidate in ("podman", "docker"):
+        if shutil.which(candidate):
+            return candidate
+    return None
+
+
 def _prompt_required(prompt_text: str, **kwargs: object) -> str:
     """Prompt for a non-empty string, re-asking if blank."""
     while True:
@@ -79,7 +92,10 @@ def _build_summary_table(values: dict) -> Table:
     else:
         table.add_row("Scale factor", str(values.get("scale_factor", 1)))
 
-    table.add_row("Namespace", values.get("namespace", "hammerdb"))
+    backend = values.get("backend_str", "kubernetes")
+    table.add_row("Workers run on", backend)
+    if values.get("namespace"):
+        table.add_row("Namespace", values["namespace"])
 
     storage = values.get("storage_metrics")
     if storage and storage.get("enabled"):
@@ -139,6 +155,27 @@ def run_wizard() -> dict | None:
         console.print()
         name = _prompt_required("Deployment name")
 
+        console.print()
+        console.print("[dim]Where should the HammerDB workers run?[/dim]")
+        detected = _detect_local_runtime()
+        # Lead with whatever is actually installed: the common case is a
+        # single host with one runtime, and that user should not have to
+        # think about the choice. Kubernetes stays last either way, so the
+        # menu positions of the container options are the only ones that
+        # move.
+        container_choices = [
+            ("podman", "podman on this machine"),
+            ("docker", "docker on this machine"),
+        ]
+        if detected:
+            container_choices.sort(key=lambda choice: choice[0] != detected)
+        backend_str = _select_option(
+            "Run workers on",
+            container_choices
+            + [("kubernetes", "Kubernetes cluster  (needs helm and kubectl)")],
+        )
+        is_kubernetes = backend_str == "kubernetes"
+
         # ── Step 2: Database & Benchmark ────────────────────────────
         _step_header(
             2,
@@ -150,7 +187,11 @@ def run_wizard() -> dict | None:
 
         db_type_str = _select_option(
             "Database type",
-            [("oracle", "Oracle"), ("mssql", "Microsoft SQL Server")],
+            [
+                ("mssql", "Microsoft SQL Server"),
+                ("postgres", "PostgreSQL"),
+                ("oracle", "Oracle  (needs a locally built image)"),
+            ],
         )
 
         console.print()
@@ -252,11 +293,18 @@ def run_wizard() -> dict | None:
             6,
             total_steps,
             "Infrastructure",
-            "Kubernetes and storage settings.",
+            "Cluster and storage settings."
+            if is_kubernetes
+            else "Storage metrics collection.",
         )
 
-        console.print()
-        namespace = Prompt.ask("Kubernetes namespace", default="hammerdb")
+        # Only ask about a namespace when the answer can matter. Asking a
+        # container-backend user for Kubernetes settings makes the tool look
+        # like it needs a cluster when it does not.
+        namespace = None
+        if is_kubernetes:
+            console.print()
+            namespace = Prompt.ask("Kubernetes namespace", default="hammerdb")
 
         storage_metrics = None
         console.print()
@@ -291,6 +339,7 @@ def run_wizard() -> dict | None:
             "warehouses": warehouses,
             "scale_factor": scale_factor,
             "namespace": namespace,
+            "backend_str": backend_str,
             "storage_metrics": storage_metrics,
         }
 
