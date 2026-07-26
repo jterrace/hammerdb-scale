@@ -2,15 +2,110 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class TransactionTiming:
+    """Response time distribution for one TPC-C transaction type.
+
+    HammerDB 6.0 reports these from reservoir sampling, so the tail
+    percentiles are exact rather than bucket approximations. All times are
+    milliseconds as HammerDB emits them.
+    """
+
+    name: str
+    calls: int
+    min_ms: float
+    avg_ms: float
+    max_ms: float
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    ratio_pct: float
 
 
 @dataclass
 class TproccResult:
     tpm: int
     nopm: int
+    # Populated only when the run had time profiling enabled. Storage
+    # validation cares about this: array-side latency means little without
+    # the application's view of the same moment.
+    timings: list[TransactionTiming] = field(default_factory=list)
+
+
+# The parse script prints this header immediately before the timing JSON.
+_TIMING_HEADER = "TRANSACTION RESPONSE TIMES"
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Return the first balanced {...} block in text, or None."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def parse_transaction_timings(log_text: str) -> list[TransactionTiming]:
+    """Pull per-transaction response times out of HammerDB 6.0 output.
+
+    Returns an empty list when profiling was disabled, which is the common
+    case: HammerDB then emits a placeholder object saying the job has no
+    timing data, and callers must treat that exactly like absent data rather
+    than rendering an empty latency panel.
+    """
+    header_at = log_text.find(_TIMING_HEADER)
+    if header_at == -1:
+        return []
+
+    block = _extract_json_object(log_text[header_at + len(_TIMING_HEADER) :])
+    if not block:
+        return []
+    try:
+        payload = json.loads(block)
+    except json.JSONDecodeError:
+        return []
+
+    timings: list[TransactionTiming] = []
+    for name, entry in payload.items():
+        if not isinstance(entry, dict) or "calls" not in entry:
+            # The "no timing data" placeholder, or a job-id wrapper.
+            continue
+
+        def _number(key: str) -> float:
+            try:
+                return float(entry.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        timings.append(
+            TransactionTiming(
+                name=name,
+                calls=int(_number("calls")),
+                min_ms=_number("min_ms"),
+                avg_ms=_number("avg_ms"),
+                max_ms=_number("max_ms"),
+                p50_ms=_number("p50_ms"),
+                p95_ms=_number("p95_ms"),
+                p99_ms=_number("p99_ms"),
+                ratio_pct=_number("ratio_pct"),
+            )
+        )
+    # Busiest transaction first: that is the one a reader wants to see.
+    timings.sort(key=lambda t: t.calls, reverse=True)
+    return timings
 
 
 @dataclass

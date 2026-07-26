@@ -9,7 +9,7 @@ from pathlib import Path
 
 from hammerdb_scale.config.schema import HammerDBScaleConfig
 from hammerdb_scale.constants import VERSION
-from hammerdb_scale.results.parsers import get_parser
+from hammerdb_scale.results.parsers import get_parser, parse_transaction_timings
 
 
 _PURE_JSON_START = ">>>PURE_METRICS_JSON_START<<<"
@@ -191,6 +191,24 @@ def aggregate_results(
                         "tpm": parsed.tpm,
                         "nopm": parsed.nopm,
                     }
+                    # Present only when the run had time profiling on. Absent
+                    # is normal, so downstream must treat it as optional.
+                    timings = parse_transaction_timings(log_text)
+                    if timings:
+                        target_result["tprocc"]["timings"] = [
+                            {
+                                "name": t.name,
+                                "calls": t.calls,
+                                "min_ms": t.min_ms,
+                                "avg_ms": t.avg_ms,
+                                "max_ms": t.max_ms,
+                                "p50_ms": t.p50_ms,
+                                "p95_ms": t.p95_ms,
+                                "p99_ms": t.p99_ms,
+                                "ratio_pct": t.ratio_pct,
+                            }
+                            for t in timings
+                        ]
             elif benchmark == "tproch":
                 parsed = parser.parse_tproch(log_text)
                 if parsed:

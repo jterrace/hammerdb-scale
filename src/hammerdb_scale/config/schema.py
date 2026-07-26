@@ -187,7 +187,12 @@ class TproccConfig(BaseModel):
     total_iterations: int = Field(default=10000000, ge=1)
     all_warehouses: bool = True
     checkpoint: bool = True
-    time_profile: bool = False
+    # On by default: this is what produces the per-transaction response time
+    # percentiles in the scorecard, and array-side latency is hard to argue
+    # from without the application's view of the same moment. Measured at
+    # under run-to-run variance on an 8-VU SQL Server run, so the data is
+    # effectively free.
+    time_profile: bool = True
 
 
 class TprochConfig(BaseModel):

@@ -24,6 +24,8 @@ from hammerdb_scale.runtime.container import (
     LABEL_TARGET_HOST,
     ContainerBackend,
     _parse_ts,
+    k8s_cpu_to_cores,
+    k8s_memory_to_bytes,
 )
 
 
@@ -220,3 +222,53 @@ class TestCreatedSortKey:
         older = _created_sort_key({"Created": 1769000000})
         newer = _created_sort_key({"Created": 1769009999})
         assert newer > older
+
+
+class TestResourceTranslation:
+    """The shared `resources` block is written in Kubernetes units.
+
+    It used to be read only by the Helm path, so setting a limit and running
+    on containers silently did nothing: the user believed the driver was
+    capped when it was not.
+    """
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("8Gi", 8 * 1024**3),
+            ("512Mi", 512 * 1024**2),
+            ("1G", 1000**3),
+            ("1024", 1024),
+            ("", None),
+            ("garbage", None),
+        ],
+    )
+    def test_memory_conversion(self, value, expected):
+        assert k8s_memory_to_bytes(value) == expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("8", 8.0), ("500m", 0.5), ("0.5", 0.5), ("", None), ("bad", None)],
+    )
+    def test_cpu_conversion(self, value, expected):
+        assert k8s_cpu_to_cores(value) == expected
+
+    def test_limits_become_runtime_flags(self, backend):
+        backend.memory_limit = "8Gi"
+        backend.cpu_limit = "4"
+        args = backend._resource_args()
+        assert "--memory" in args
+        assert str(8 * 1024**3) in args
+        assert "--cpus" in args
+        assert "4" in args
+
+    def test_unset_limits_produce_no_flags(self, backend):
+        backend.memory_limit = None
+        backend.cpu_limit = None
+        assert backend._resource_args() == []
+
+    def test_unparseable_limit_degrades_to_no_limit(self, backend):
+        """An odd quantity must not abort the run."""
+        backend.memory_limit = "not-a-size"
+        backend.cpu_limit = "nonsense"
+        assert backend._resource_args() == []

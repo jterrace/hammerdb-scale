@@ -47,9 +47,64 @@ LABEL_INDEX = "hammerdb.io/target-index"
 
 MANAGED_VALUE = "hammerdb-scale"
 
+# Kubernetes memory suffixes. The binary ones are what resources.limits.memory
+# normally uses; the decimal ones are accepted by Kubernetes so we accept them
+# too rather than silently mis-sizing a container.
+_MEMORY_SUFFIXES = {
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+    "K": 1000,
+    "M": 1000**2,
+    "G": 1000**3,
+    "T": 1000**4,
+}
+
 
 class ContainerRuntimeError(HammerDBScaleError):
     """The container runtime is missing or a command against it failed."""
+
+
+def k8s_memory_to_bytes(value: str) -> int | None:
+    """Convert a Kubernetes memory quantity to bytes.
+
+    The `resources` block is shared by both backends and is written in
+    Kubernetes units, so the container path has to translate rather than
+    ignore it. Returns None when the value cannot be understood, so an odd
+    quantity degrades to "no limit" rather than aborting the run.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    for suffix, factor in sorted(
+        _MEMORY_SUFFIXES.items(), key=lambda kv: -len(kv[0])
+    ):
+        if text.endswith(suffix):
+            try:
+                return int(float(text[: -len(suffix)]) * factor)
+            except ValueError:
+                return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def k8s_cpu_to_cores(value: str) -> float | None:
+    """Convert a Kubernetes CPU quantity to a core count.
+
+    Accepts both plain cores ("8") and millicores ("500m").
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("m"):
+            return float(text[:-1]) / 1000.0
+        return float(text)
+    except ValueError:
+        return None
 
 
 def detect_runtime(preferred: str | None = None) -> str:
@@ -77,12 +132,35 @@ class ContainerBackend:
         network: str | None = None,
         scripts_dir: Path | None = None,
         hammerdb_home: str | None = None,
+        memory_limit: str | None = None,
+        cpu_limit: str | None = None,
     ) -> None:
         self.runtime = detect_runtime(runtime)
         self.name = self.runtime
         self.network = network
         self._scripts_dir = scripts_dir
         self.hammerdb_home = hammerdb_home
+        self.memory_limit = memory_limit
+        self.cpu_limit = cpu_limit
+
+    def _resource_args(self) -> list[str]:
+        """Translate the shared `resources.limits` block for this runtime.
+
+        Both podman and docker accept --memory/--cpus, so a limit set in the
+        config must be applied here too. Previously the block was read only by
+        the Helm path, so a container run silently ignored it and the user
+        believed the driver was capped when it was not.
+        """
+        args: list[str] = []
+        if self.memory_limit:
+            as_bytes = k8s_memory_to_bytes(self.memory_limit)
+            if as_bytes:
+                args.extend(["--memory", str(as_bytes)])
+        if self.cpu_limit:
+            cores = k8s_cpu_to_cores(self.cpu_limit)
+            if cores:
+                args.extend(["--cpus", f"{cores:g}"])
+        return args
 
     # --- internals ---
 
@@ -190,6 +268,8 @@ class ContainerBackend:
 
             if self.network:
                 args.extend(["--network", self.network])
+
+            args.extend(self._resource_args())
 
             # Env vars go via a file so that passwords never appear in the
             # process list or the shell history of the calling user.

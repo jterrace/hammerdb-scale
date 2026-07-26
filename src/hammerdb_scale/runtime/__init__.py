@@ -46,10 +46,13 @@ def get_backend(config, namespace: str | None = None) -> Backend:
         if backend_name in ("docker", "podman"):
             runtime = backend_name
 
+        limits = config.resources.limits
         return ContainerBackend(
             runtime=runtime,
             network=getattr(container_cfg, "network", None),
             hammerdb_home=config.targets.defaults.image.hammerdb_home,
+            memory_limit=limits.memory,
+            cpu_limit=limits.cpu,
         )
 
     from hammerdb_scale.runtime.kubernetes import KubernetesBackend

@@ -95,6 +95,8 @@ td { padding: 10px 14px; border-bottom: 1px solid var(--gray-200); }
 tbody tr:nth-child(even) { background: var(--gray-50); }
 tbody tr:nth-child(odd) { background: var(--white); }
 .num { text-align: right; font-variant-numeric: tabular-nums; font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+.txn-name { font-weight: 600; letter-spacing: 0.02em; }
+.worst { color: #b91c1c; }
 .status-ok { color: var(--green); font-weight: 600; }
 .status-fail { color: var(--red); font-weight: 600; }
 /* Charts */
@@ -337,6 +339,112 @@ def _storage_charts_js(pure_metrics: dict | None) -> str:
     return html
 
 
+def _aggregate_timings(targets: list[dict]) -> list[dict]:
+    """Combine per-target transaction timings into one call-weighted view.
+
+    Averages and percentiles are weighted by call count, because a target
+    that ran ten times the transactions should dominate the mean. Maximum is
+    the worst seen anywhere: a single stall on one target is exactly the
+    outlier a storage validation needs to surface, so it must not be averaged
+    away.
+    """
+    combined: dict[str, dict] = {}
+    for target in targets:
+        for timing in (target.get("tprocc") or {}).get("timings", []):
+            name = timing.get("name")
+            if not name:
+                continue
+            calls = int(timing.get("calls", 0) or 0)
+            if calls <= 0:
+                continue
+            entry = combined.setdefault(
+                name,
+                {
+                    "name": name,
+                    "calls": 0,
+                    "max_ms": 0.0,
+                    "_weighted": {k: 0.0 for k in ("avg_ms", "p50_ms", "p95_ms", "p99_ms")},
+                },
+            )
+            entry["calls"] += calls
+            entry["max_ms"] = max(entry["max_ms"], float(timing.get("max_ms", 0) or 0))
+            for key in entry["_weighted"]:
+                entry["_weighted"][key] += float(timing.get(key, 0) or 0) * calls
+
+    rows = []
+    for entry in combined.values():
+        calls = entry["calls"]
+        row = {"name": entry["name"], "calls": calls, "max_ms": entry["max_ms"]}
+        for key, total in entry["_weighted"].items():
+            row[key] = total / calls if calls else 0.0
+        rows.append(row)
+    rows.sort(key=lambda r: r["calls"], reverse=True)
+    return rows
+
+
+def _latency_section_html(targets: list[dict]) -> str:
+    """Render the transaction response time section.
+
+    Returns "" when the run had time profiling disabled, so the report simply
+    omits the section rather than showing an empty panel.
+    """
+    rows = _aggregate_timings(targets)
+    if not rows:
+        return ""
+
+    body = "\n".join(
+        f"""  <tr>
+    <td class="txn-name">{r['name']}</td>
+    <td class="num">{_fmt_number(r['calls'])}</td>
+    <td class="num">{r['avg_ms']:.2f}</td>
+    <td class="num">{r['p50_ms']:.2f}</td>
+    <td class="num">{r['p95_ms']:.2f}</td>
+    <td class="num">{r['p99_ms']:.2f}</td>
+    <td class="num worst">{r['max_ms']:,.2f}</td>
+  </tr>"""
+        for r in rows
+    )
+
+    labels = json.dumps([r["name"] for r in rows])
+    p50 = json.dumps([round(r["p50_ms"], 3) for r in rows])
+    p95 = json.dumps([round(r["p95_ms"], 3) for r in rows])
+    p99 = json.dumps([round(r["p99_ms"], 3) for r in rows])
+
+    return f"""<h2 class="section-title">Transaction Response Times
+  <span style="font-weight:400;font-size:0.85rem;color:var(--gray-600);">
+    (milliseconds, call-weighted across targets)
+  </span></h2>
+<table class="data-table">
+  <thead><tr>
+    <th>Transaction</th><th class="num">Calls</th><th class="num">Avg</th>
+    <th class="num">p50</th><th class="num">p95</th><th class="num">p99</th>
+    <th class="num">Max</th>
+  </tr></thead>
+  <tbody>
+{body}
+  </tbody>
+</table>
+<div class="chart-box"><canvas id="latencyPercentileChart"></canvas></div>
+<script>
+new Chart(document.getElementById('latencyPercentileChart'), {{
+  type: 'bar',
+  data: {{
+    labels: {labels},
+    datasets: [
+      {{ label: 'p50', data: {p50}, backgroundColor: '#4ade80' }},
+      {{ label: 'p95', data: {p95}, backgroundColor: '#fbbf24' }},
+      {{ label: 'p99', data: {p99}, backgroundColor: '#f87171' }}
+    ]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{ title: {{ display: true, text: 'Response time percentiles by transaction' }} }},
+    scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: 'ms' }} }} }}
+  }}
+}});
+</script>"""
+
+
 def _storage_section_html(pure_metrics: dict | None) -> str:
     """Render the full Storage Performance section: cards, stats table, and charts."""
     if not pure_metrics:
@@ -570,6 +678,7 @@ new Chart(document.getElementById('nopmChart'), {{
 }});
 </script>"""
 
+    latency_section = _latency_section_html(targets)
     storage_section = _storage_section_html(pure_metrics) if has_storage else ""
 
     chartjs_src = _load_chartjs()
@@ -590,6 +699,7 @@ new Chart(document.getElementById('nopmChart'), {{
 {table_html}
 <script>{chartjs_src}</script>
 {chart_html}
+{latency_section}
 {storage_section}
 {_config_snapshot(summary)}
 </div>
