@@ -4,7 +4,39 @@ HammerDB-Scale uses a YAML config file to define database targets and benchmark 
 
 ## Minimal Example
 
-The smallest valid config — two SQL Server targets running TPC-C:
+The smallest valid config: two SQL Server targets running TPC-C on a machine with podman.
+
+```yaml
+name: my-benchmark
+backend: podman
+default_benchmark: tprocc
+
+targets:
+  defaults:
+    type: mssql
+    username: sa
+    password: "YourPassword"
+    mssql: {}
+  hosts:
+    - name: sql-01
+      host: sql-01.example.com
+    - name: sql-02
+      host: sql-02.example.com
+
+hammerdb:
+  tprocc:
+    warehouses: 100
+    load_virtual_users: 4
+    driver: timed
+    rampup: 2
+    duration: 5
+```
+
+Everything else has sensible defaults.
+
+### Running on Kubernetes
+
+Omit `backend` to run on Kubernetes instead; it is the default. The same config works, minus the `backend` line, but the `kubernetes` and `resources` sections now apply:
 
 ```yaml
 name: my-benchmark
@@ -29,9 +61,23 @@ hammerdb:
     driver: timed
     rampup: 2
     duration: 5
+
+resources:
+  requests:
+    memory: "4Gi"
+    cpu: "4"
+  limits:
+    memory: "8Gi"
+    cpu: "8"
+
+kubernetes:
+  namespace: hammerdb
+  job_ttl: 86400
 ```
 
-Everything else has sensible defaults. For complete examples covering all database and benchmark combinations, see the [examples/](../examples/) directory.
+This needs Helm, kubectl, and a cluster context with permission to create Jobs, ConfigMaps, and Secrets in the target namespace. See the README's [Running on Kubernetes instead](../README.md#running-on-kubernetes-instead) section for the full requirements.
+
+For complete examples covering all database and benchmark combinations, see the [examples/](../examples/) directory.
 
 ## Config File Discovery
 
@@ -44,17 +90,19 @@ The CLI looks for the config file in this order:
 
 ## Schema Overview
 
-A config file has five top-level sections:
+A config file has seven top-level sections:
 
 | Section | Purpose |
 |---------|---------|
-| `targets` | **Where** to benchmark — database hosts, credentials, and database-specific settings |
-| `hammerdb` | **How** to benchmark — shared benchmark parameters (warehouses, VUs, duration) |
-| `resources` | Kubernetes pod resource requests and limits |
-| `kubernetes` | Namespace and job TTL settings |
+| `backend` | Where workers run: `kubernetes` (default), `podman`, `docker`, or `container` to auto-detect podman or docker |
+| `targets` | Where to benchmark: database hosts, credentials, and database-specific settings |
+| `hammerdb` | How to benchmark: shared benchmark parameters (warehouses, VUs, duration) |
+| `resources` | Memory and CPU limits, applied as Kubernetes pod resources or as `--memory`/`--cpus` on the container backend. `requests` is Kubernetes-only |
+| `kubernetes` | Namespace and job TTL settings. Ignored for `podman`/`docker`/`container` backends |
+| `container` | Runtime selection and network settings for the `podman`/`docker`/`container` backends. Ignored on Kubernetes |
 | `storage_metrics` | Optional Pure Storage metrics collection |
 
-Key design principle: **all database-specific settings live under `targets.defaults.<type>`**, not under `hammerdb`. The `hammerdb` section contains only shared benchmark parameters that apply regardless of database type. This makes every database-specific setting overridable per-host.
+All database-specific settings live under `targets.defaults.<type>`, not under `hammerdb`. The `hammerdb` section contains only shared benchmark parameters that apply regardless of database type. This makes every database-specific setting overridable per-host.
 
 ## Complete Field Reference
 
@@ -62,9 +110,10 @@ Key design principle: **all database-specific settings live under `targets.defau
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | yes | | Deployment identifier. Used in K8s job names and test run IDs. |
+| `name` | string | yes | | Deployment identifier. Used in job names and test run IDs. |
 | `description` | string | no | `""` | Optional description for this benchmark configuration. |
 | `default_benchmark` | string | no | `null` | Default benchmark type when not specified on the CLI. Valid values: `tprocc`, `tproch`. |
+| `backend` | string | no | `"kubernetes"` | Where workers run. Valid values: `kubernetes`, `podman`, `docker`, `container` (auto-detect podman or docker). |
 
 ### `targets`
 
@@ -77,7 +126,7 @@ Key design principle: **all database-specific settings live under `targets.defau
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `type` | string | yes | | Database type: `oracle` or `mssql`. |
+| `type` | string | yes | | Database type: `oracle`, `mssql`, or `postgres`. |
 | `username` | string | yes | | Database login username. Typical values: `system` (Oracle), `sa` (MSSQL). |
 | `password` | string | yes | | Database login password. |
 | `image.repository` | string | no | `"sillidata/hammerdb-scale"` | Container image repository. Use `sillidata/hammerdb-scale-oracle` for Oracle targets. |
@@ -85,6 +134,7 @@ Key design principle: **all database-specific settings live under `targets.defau
 | `image.pull_policy` | string | no | `"Always"` | K8s image pull policy: `Always`, `IfNotPresent`, or `Never`. |
 | `oracle` | object | conditional | | Oracle-specific settings. **Required** when `type: oracle`. |
 | `mssql` | object | conditional | | MSSQL-specific settings. **Required** when `type: mssql`. |
+| `postgres` | object | conditional | | PostgreSQL-specific settings. **Required** when `type: postgres`. |
 
 ### `targets.defaults.oracle`
 
@@ -120,13 +170,33 @@ All fields are per-host overridable.
 | `tproch.maxdop` | int | `2` | Maximum degree of parallelism for TPC-H queries. Min: 1. |
 | `tproch.use_clustered_columnstore` | bool | `false` | Use clustered columnstore indexes for TPC-H tables. Improves analytical query performance at the cost of longer build times. |
 
+### `targets.defaults.postgres`
+
+All fields are per-host overridable.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | int | `5432` | PostgreSQL listener port. Range: 1-65535. |
+| `sslmode` | string | `"prefer"` | TLS mode: `prefer`, `require`, or `disable`. |
+| `tablespace` | string | `""` | Tablespace for benchmark schema objects. Empty uses the default tablespace. |
+| `tprocc.database_name` | string | `"tpcc"` | Database created during the schema build. |
+| `tprocc.user` | string | `"tpcc"` | Schema owner, created during the schema build. |
+| `tprocc.password` | string | `"tpcc"` | Password for the TPC-C schema user. |
+| `tprocc.stored_procedures` | bool | `true` | Use stored procedures for the TPC-C driver. HammerDB's recommended setting; must match between build and run, since the driver calls procedures that only exist if the schema was built with them. |
+| `tprocc.partition` | bool | `false` | Partition TPC-C tables during the schema build. |
+| `tprocc.vacuum` | bool | `false` | Run `VACUUM` after the schema build. |
+| `tproch.database_name` | string | `"tpch"` | Database created during the schema build. |
+| `tproch.user` | string | `"tpch"` | Schema owner, created during the schema build. |
+| `tproch.password` | string | `"tpch"` | Password for the TPC-H schema user. |
+| `tproch.max_parallel_workers` | int | `8` | Degree of parallelism for the TPC-H query phase. Min: 1. |
+
 ### `targets.hosts[]`
 
-Each host inherits all fields from `targets.defaults`. Any field can be overridden per-host, including nested fields under `oracle` or `mssql`.
+Each host inherits all fields from `targets.defaults`. Any field can be overridden per-host, including nested fields under `oracle`, `mssql`, or `postgres`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Unique identifier for this host. Used in K8s job names. |
+| `name` | string | yes | Unique identifier for this host. Used in job names. |
 | `host` | string | yes | Hostname or IP address of the database server. |
 | All `targets.defaults` fields | | no | Any field from defaults can be overridden here. |
 
@@ -159,23 +229,36 @@ Shared benchmark parameters. These apply to all database types. **No database-sp
 | `load_virtual_users` | int | `1` | Number of virtual users for the query execution phase. Min: 1. |
 | `total_querysets` | int | `1` | Number of complete TPC-H query set iterations to execute. Min: 1. |
 
-### `resources`
+### `container`
 
-Standard Kubernetes resource requests and limits for HammerDB worker pods.
+Only used when `backend` is `podman`, `docker`, or `container`. Ignored on Kubernetes.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `requests.memory` | string | `"4Gi"` | Minimum memory reservation. |
-| `requests.cpu` | string | `"4"` | Minimum CPU reservation. |
-| `limits.memory` | string | `"8Gi"` | Maximum memory limit. |
-| `limits.cpu` | string | `"8"` | Maximum CPU limit. |
+| `runtime` | string | `"auto"` | Which container runtime to use: `auto` (prefers podman if both are present), `podman`, or `docker`. Only meaningful when `backend: container`; the `podman` and `docker` backend values already pick the runtime directly. |
+| `network` | string | `null` | Container network name. `null` uses the runtime's default network. |
+
+### `resources`
+
+`limits` applies to both backends: Kubernetes pod resource limits, or `--memory`/`--cpus` on the podman/docker container. `requests` only has a Kubernetes equivalent and is ignored on the container backend.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `requests.memory` | string | `"4Gi"` | Minimum memory reservation. Kubernetes only. |
+| `requests.cpu` | string | `"4"` | Minimum CPU reservation. Kubernetes only. |
+| `limits.memory` | string | `"8Gi"` | Maximum memory limit. Both backends. |
+| `limits.cpu` | string | `"8"` | Maximum CPU limit. Both backends. |
 
 ### `kubernetes`
+
+Only used when `backend` is `kubernetes`. Ignored for `podman`, `docker`, and `container` backends.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `namespace` | string | `"hammerdb"` | Kubernetes namespace for benchmark jobs. |
-| `job_ttl` | int | `86400` | Time-to-live in seconds for completed K8s jobs. Default is 24 hours. Min: 0. |
+| `job_ttl` | int | `86400` | Time-to-live in seconds for completed jobs. Default is 24 hours. Min: 0. |
+| `security_context` | bool | `true` | Emit a restricted-compliant `securityContext` on the job pods. Needed on clusters enforcing the restricted Pod Security Standard. OpenShift applies an equivalent context on its own either way. |
+| `use_secrets` | bool | `true` | Pass database credentials through a Kubernetes Secret rather than plain environment values on the Job spec, where `kubectl describe job` would expose them. |
 
 ### `storage_metrics`
 
@@ -293,12 +376,21 @@ targets:
 
 Ready-to-use config files for every database and benchmark combination:
 
-- [examples/values-oracle.yaml](../examples/values-oracle.yaml) — Oracle reference config (all fields)
-- [examples/values-mssql.yaml](../examples/values-mssql.yaml) — MSSQL reference config (all fields)
-- [examples/oracle-tprocc.yaml](../examples/oracle-tprocc.yaml) — Oracle TPC-C (4 targets)
-- [examples/oracle-tproch.yaml](../examples/oracle-tproch.yaml) — Oracle TPC-H (4 targets)
-- [examples/mssql-tprocc.yaml](../examples/mssql-tprocc.yaml) — SQL Server TPC-C (4 targets)
-- [examples/mssql-tproch.yaml](../examples/mssql-tproch.yaml) — SQL Server TPC-H (4 targets)
+**Kubernetes backend:**
+
+- [examples/values-oracle.yaml](../examples/values-oracle.yaml): Oracle reference config, all fields
+- [examples/values-mssql.yaml](../examples/values-mssql.yaml): MSSQL reference config, all fields
+- [examples/oracle-tprocc.yaml](../examples/oracle-tprocc.yaml): Oracle TPC-C, 4 targets
+- [examples/oracle-tproch.yaml](../examples/oracle-tproch.yaml): Oracle TPC-H, 4 targets
+- [examples/mssql-tprocc.yaml](../examples/mssql-tprocc.yaml): SQL Server TPC-C, 4 targets
+- [examples/mssql-tproch.yaml](../examples/mssql-tproch.yaml): SQL Server TPC-H, 4 targets
+- [examples/scale-tests/](../examples/scale-tests/): progressive 1 to 8 target configs for Oracle and MSSQL, used to build a scale curve
+
+**Container backend (podman or docker):**
+
+- [examples/container-mssql-tprocc.yaml](../examples/container-mssql-tprocc.yaml): SQL Server TPC-C, single host
+- [examples/container-postgres-tprocc.yaml](../examples/container-postgres-tprocc.yaml): PostgreSQL TPC-C, single host
+- [examples/postgres-setup/provision_postgres.sh](../examples/postgres-setup/provision_postgres.sh): reference script for configuring `pg_hba.conf` and `listen_addresses` so PostgreSQL accepts connections from the worker host
 
 ## v1 Config Auto-Migration
 

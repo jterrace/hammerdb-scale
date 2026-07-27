@@ -134,7 +134,7 @@ init  →  validate  →  run --build  →  results  →  report
 
 | Command | Description |
 |---------|-------------|
-| `version` | Show CLI, Python, helm, kubectl versions |
+| `version` | Show CLI, Python, and backend tooling versions |
 | `init` | Generate config file interactively |
 | `validate` | Validate config, prerequisites, and connectivity |
 | `build` | Create benchmark schema on database targets |
@@ -147,11 +147,11 @@ init  →  validate  →  run --build  →  results  →  report
 
 ## Documentation
 
-- [Configuration Reference](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/CONFIGURATION.md) — YAML schema, target defaults, examples
-- [Usage Guide](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/USAGE-GUIDE.md) — Command reference, results interpretation, troubleshooting
-- [Container Images](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/CONTAINER-IMAGES.md) — Pre-built images, building your own, architecture
-- [Migration Guide (v1 to v2)](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/MIGRATION.md) — Upgrading from shell-script version
-- [Security](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/SECURITY.md) — Credential handling and network considerations
+- [Configuration Reference](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/CONFIGURATION.md): YAML schema, target defaults, examples
+- [Usage Guide](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/USAGE-GUIDE.md): Command reference, results interpretation, troubleshooting
+- [Container Images](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/CONTAINER-IMAGES.md): Pre-built images, building your own, architecture
+- [Migration Guide (v1 to v2)](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/MIGRATION.md): Upgrading from shell-script version
+- [Security](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/docs/SECURITY.md): Credential handling and network considerations
 - [Changelog](https://github.com/PureStorage-OpenConnect/hammerdb-scale/blob/main/CHANGELOG.md)
 
 ## Requirements
@@ -199,7 +199,7 @@ By building it you accept [Oracle's licence terms](https://www.oracle.com/downlo
 
 ### Optional
 
-- [pipx](https://pipx.pypa.io/) — recommended for installing CLI tools in isolated environments: `pipx install hammerdb-scale`
+- [pipx](https://pipx.pypa.io/): recommended for installing CLI tools in isolated environments, `pipx install hammerdb-scale`
 
 ## Configuration
 
@@ -207,6 +207,7 @@ See the [Configuration Reference](https://github.com/PureStorage-OpenConnect/ham
 
 ```yaml
 name: my-benchmark
+backend: podman
 default_benchmark: tprocc
 
 targets:

@@ -87,7 +87,7 @@ podman or docker, and HammerDB moves to 6.0.
   - Input validation and Ctrl+C handling
 
 ### Fixed
-- README.md documentation links broken on PyPI — relative paths like `docs/CONFIGURATION.md` resolved against `pypi.org` instead of GitHub. Converted all links to absolute GitHub URLs.
+- README.md documentation links broken on PyPI: relative paths like `docs/CONFIGURATION.md` resolved against `pypi.org` instead of GitHub. Converted all links to absolute GitHub URLs.
 
 ## [2.0.0] - 2026-03-01
 
