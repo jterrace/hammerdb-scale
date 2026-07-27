@@ -2,7 +2,40 @@
 
 from pathlib import Path
 
-VERSION = "2.0.2"
+
+def _package_version() -> str:
+    """Resolve the CLI version, with pyproject.toml as the source of truth.
+
+    Duplicating the version in this module drifted: it said 2.0.2 while
+    pyproject said 2.0.3, so `hammerdb-scale version` reported the wrong
+    number. Installed metadata alone is not enough either, because an editable
+    install keeps whatever version was current when `pip install -e` last ran
+    (observed reporting 2.0.0 against a 2.0.3 source tree).
+
+    So: prefer pyproject.toml when running from a source checkout, and fall
+    back to installed metadata for a normal wheel install.
+    """
+    pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            import tomllib
+
+            with open(pyproject, "rb") as fh:
+                declared = tomllib.load(fh).get("project", {}).get("version")
+            if declared:
+                return str(declared)
+        except (OSError, ValueError, ImportError):
+            pass
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("hammerdb-scale")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+VERSION = _package_version()
 
 DEFAULT_CONFIG_FILENAMES = ["hammerdb-scale.yaml", "hammerdb-scale.yml"]
 CONFIG_ENV_VAR = "HAMMERDB_SCALE_CONFIG"
@@ -10,6 +43,20 @@ DEFAULT_NAMESPACE = "hammerdb"
 
 # CLI phase -> Helm/entrypoint phase
 PHASE_MAP = {"build": "build", "run": "load"}
+
+# The HammerDB version this repo builds images with.
+DEFAULT_HAMMERDB_VERSION = "6.0"
+
+# Where the chart mounts TCL scripts by default.
+#
+# This deliberately tracks the *published* image rather than the version this
+# repo builds, because the two can differ between a local build and a registry
+# push. entrypoint.sh searches for its scripts rather than requiring an exact
+# match, so a mismatch is tolerated either way; but pointing the default at a
+# path the published image does not have would break every out-of-the-box
+# Kubernetes run. Only move this after the matching images are pushed.
+PUBLISHED_HAMMERDB_VERSION = "6.0"
+DEFAULT_HAMMERDB_HOME = f"/opt/HammerDB-{PUBLISHED_HAMMERDB_VERSION}"
 
 DEFAULT_RESULTS_DIR = "results"
 DEFAULT_JOB_TTL = 86400
@@ -64,6 +111,8 @@ def get_chart_path() -> str:
 DEFAULT_IMAGES = {
     "oracle": "sillidata/hammerdb-scale-oracle",
     "mssql": "sillidata/hammerdb-scale",
+    # The base image already carries libpq, so PostgreSQL needs no extension.
+    "postgres": "sillidata/hammerdb-scale",
 }
 
 

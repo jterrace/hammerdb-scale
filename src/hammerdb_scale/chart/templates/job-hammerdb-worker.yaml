@@ -51,10 +51,26 @@ spec:
     spec:
       hostNetwork: {{ $.Values.global.hostNetwork | default false }}
       restartPolicy: Never
+      {{- if ne (($.Values.global.securityContext).enabled | toString) "false" }}
+      # Satisfies the "restricted" Pod Security Standard so the chart is
+      # portable to plain Kubernetes clusters that enforce it. runAsUser is
+      # deliberately NOT set: OpenShift's SCC assigns an arbitrary UID from the
+      # namespace range, and hardcoding one conflicts with that.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- end }}
       containers:
       - name: hammerdb
         image: "{{ $.Values.global.image.repository }}:{{ $.Values.global.image.tag }}"
         imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+        {{- if ne (($.Values.global.securityContext).enabled | toString) "false" }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        {{- end }}
         env:
         # Test identification
         - name: TEST_RUN_ID
@@ -70,11 +86,27 @@ spec:
         - name: DATABASE_TYPE
           value: {{ $target.type | quote }}
 
-        # Database connection
+        # Database connection. Credentials come from a Secret when enabled so
+        # they are not readable via `kubectl describe job`.
+        {{- $useSecrets := ne (($.Values.kubernetes).useSecrets | toString) "false" }}
+        {{- $secretName := printf "%s-credentials" (include "hammerdb-scale-test.fullname" $) }}
+        {{- if $useSecrets }}
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-username
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-password
+        {{- else }}
         - name: USERNAME
           value: {{ $target.username | quote }}
         - name: PASSWORD
           value: {{ $target.password | quote }}
+        {{- end }}
         - name: HOST
           value: {{ $target.host | quote }}
 
@@ -124,14 +156,81 @@ spec:
           value: {{ $oracleConfig.tempTablespace }}
         - name: TPROCC_USER
           value: {{ $oracleConfig.tproccUser }}
+        {{- if $useSecrets }}
+        - name: TPROCC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tprocc-password
+        {{- else }}
         - name: TPROCC_PASSWORD
           value: {{ $oracleConfig.tproccPassword }}
+        {{- end }}
         - name: TPROCH_USER
           value: {{ $oracleConfig.tprochUser }}
+        {{- if $useSecrets }}
+        - name: TPROCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tproch-password
+        {{- else }}
         - name: TPROCH_PASSWORD
           value: {{ $oracleConfig.tprochPassword }}
+        {{- end }}
         - name: TPROCH_DEGREE_OF_PARALLEL
           value: {{ $oracleConfig.degreeOfParallel | quote }}
+        {{- end }}
+
+        {{- if eq $target.type "postgres" }}
+        # PostgreSQL connection config
+        - name: PG_PORT
+          value: {{ $target.postgres.port | default 5432 | quote }}
+        - name: PG_SSLMODE
+          value: {{ $target.postgres.sslmode | default "prefer" | quote }}
+        {{- if $target.postgres.tablespace }}
+        - name: PG_TABLESPACE
+          value: {{ $target.postgres.tablespace | quote }}
+        {{- end }}
+        {{- if eq $.Values.testRun.benchmark "tprocc" }}
+        - name: TPROCC_USER
+          value: {{ $target.postgres.tprocc.user | default "tpcc" | quote }}
+        - name: TPROCC_DATABASE_NAME
+          value: {{ $target.postgres.tprocc.database_name | default "tpcc" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tprocc-password
+        {{- else }}
+        - name: TPROCC_PASSWORD
+          value: {{ $target.postgres.tprocc.password | default "tpcc" | quote }}
+        {{- end }}
+        - name: PG_STOREDPROCS
+          value: {{ $target.postgres.tprocc.stored_procedures | default true | quote }}
+        - name: PG_PARTITION
+          value: {{ $target.postgres.tprocc.partition | default false | quote }}
+        - name: PG_VACUUM
+          value: {{ $target.postgres.tprocc.vacuum | default false | quote }}
+        {{- else }}
+        - name: TPROCH_USER
+          value: {{ $target.postgres.tproch.user | default "tpch" | quote }}
+        - name: TPROCH_DATABASE_NAME
+          value: {{ $target.postgres.tproch.database_name | default "tpch" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tproch-password
+        {{- else }}
+        - name: TPROCH_PASSWORD
+          value: {{ $target.postgres.tproch.password | default "tpch" | quote }}
+        {{- end }}
+        - name: PG_MAX_PARALLEL_WORKERS
+          value: {{ $target.postgres.tproch.max_parallel_workers | default 8 | quote }}
+        {{- end }}
         {{- end }}
 
         {{- if eq $.Values.testRun.benchmark "tprocc" }}
@@ -157,7 +256,9 @@ spec:
         - name: DURATION
           value: {{ $tproccConfig.duration | quote }}
         - name: TOTAL_ITERATIONS
-          value: {{ $tproccConfig.total_iterations | quote }}
+          # printf %.0f avoids Go rendering large ints in scientific notation
+          # (10000000 -> "1e+07"), which the TCL scripts cannot parse.
+          value: {{ printf "%.0f" (float64 $tproccConfig.total_iterations) | quote }}
         - name: TPROCC_LOG_TO_TEMP
           value: "0"
         - name: TPROCC_USE_TRANSACTION_COUNTER
@@ -205,8 +306,16 @@ spec:
           value: {{ if eq $index 0 }}"true"{{ else }}"false"{{ end }}
         - name: PURE_HOST
           value: {{ $.Values.pureStorage.host | quote }}
+        {{- if $useSecrets }}
+        - name: PURE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: pure-api-token
+        {{- else }}
         - name: PURE_API_TOKEN
           value: {{ $.Values.pureStorage.apiToken | quote }}
+        {{- end }}
         {{- if $.Values.pureStorage.volume }}
         - name: PURE_VOLUME
           value: {{ $.Values.pureStorage.volume | quote }}
@@ -230,7 +339,10 @@ spec:
 
         volumeMounts:
         - name: scripts
-          mountPath: /opt/HammerDB-5.0/scripts
+          # entrypoint.sh searches for its scripts, so this need not match
+          # the image's HAMMERDB_HOME exactly. Set global.hammerdbHome to pin
+          # it for an image built with a different HAMMERDB_VERSION.
+          mountPath: {{ printf "%s/scripts" ($.Values.global.hammerdbHome | default "/opt/HammerDB-6.0") }}
 
       volumes:
       - name: scripts

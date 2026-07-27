@@ -19,7 +19,6 @@ from hammerdb_scale.constants import (
     DEFAULT_NAMESPACE,
     VERSION,
     ConfigError,
-    get_chart_path,
 )
 from hammerdb_scale.output import console, print_error, print_success, print_warning
 from rich.table import Table
@@ -36,12 +35,69 @@ _state: dict = {}
 
 @app.callback()
 def main(
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file path."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file path."
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output."),
 ) -> None:
     """HammerDB-Scale: orchestrate parallel database benchmarks on Kubernetes."""
     _state["file"] = file
     _state["verbose"] = verbose
+
+
+def _tool_version(tool_path: str, tool: str) -> str | None:
+    """Return a tool's version string, or None if it could not be determined.
+
+    kubectl removed --short in 1.28, so asking for it fails outright on any
+    current install. Use the JSON output it has supported for years and fall
+    back to plain `version` for older builds and for helm.
+    """
+    attempts: list[list[str]] = []
+    if tool == "kubectl":
+        attempts.append([tool_path, "version", "--client", "-o", "json"])
+    if tool in ("podman", "docker"):
+        # `podman version` prints a multi-line client/server block.
+        attempts.append([tool_path, "version", "--format", "{{.Client.Version}}"])
+        attempts.append([tool_path, "--version"])
+    attempts.append([tool_path, "version", "--short"])
+    attempts.append([tool_path, "version"])
+
+    for args in attempts:
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+
+        text = result.stdout.strip()
+        if "-o" in args:
+            try:
+                import json as json_mod
+
+                data = json_mod.loads(text)
+                git_version = data.get("clientVersion", {}).get("gitVersion")
+                if git_version:
+                    return git_version
+            except (ValueError, AttributeError):
+                continue
+        else:
+            return text.splitlines()[0].strip()
+    return None
+
+
+def _kubectl_context(kubectl_path: str) -> str:
+    """Current kubeconfig context, or 'unknown'."""
+    try:
+        result = subprocess.run(
+            [kubectl_path, "config", "current-context"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
 @app.command()
@@ -53,15 +109,10 @@ def version() -> None:
     # helm
     helm_path = shutil.which("helm")
     if helm_path:
-        try:
-            result = subprocess.run(
-                [helm_path, "version", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            console.print(f"  helm            {result.stdout.strip()}")
-        except Exception:
+        helm_version = _tool_version(helm_path, "helm")
+        if helm_version:
+            console.print(f"  helm            {helm_version}")
+        else:
             console.print(
                 "  helm            [yellow]found but version check failed[/yellow]"
             )
@@ -73,23 +124,11 @@ def version() -> None:
     # kubectl
     kubectl_path = shutil.which("kubectl")
     if kubectl_path:
-        try:
-            result = subprocess.run(
-                [kubectl_path, "version", "--client", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            version_str = result.stdout.strip()
-            ctx_result = subprocess.run(
-                [kubectl_path, "config", "current-context"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            ctx = ctx_result.stdout.strip() if ctx_result.returncode == 0 else "unknown"
-            console.print(f"  kubectl         {version_str} (context: {ctx})")
-        except Exception:
+        kubectl_version = _tool_version(kubectl_path, "kubectl")
+        ctx = _kubectl_context(kubectl_path)
+        if kubectl_version:
+            console.print(f"  kubectl         {kubectl_version} (context: {ctx})")
+        else:
             console.print(
                 "  kubectl         [yellow]found but version check failed[/yellow]"
             )
@@ -98,6 +137,14 @@ def version() -> None:
             "  kubectl         [red]not found[/red] "
             "(install from https://kubernetes.io/docs/tasks/tools/)"
         )
+
+    # container runtime
+    for runtime in ("podman", "docker"):
+        runtime_path = shutil.which(runtime)
+        if runtime_path:
+            runtime_version = _tool_version(runtime_path, runtime)
+            if runtime_version:
+                console.print(f"  {runtime:<15} {runtime_version}")
 
 
 def _build_config_yaml(
@@ -110,7 +157,8 @@ def _build_config_yaml(
     password: str,
     oracle_config: dict | None,
     warehouses: int = 100,
-    namespace: str = "hammerdb",
+    namespace: str | None = "hammerdb",
+    backend_str: str = "kubernetes",
     storage_metrics: dict | None = None,
     build_virtual_users: int = 4,
     load_virtual_users: int = 4,
@@ -148,6 +196,20 @@ def _build_config_yaml(
         user: "tpch"                       # TPC-H schema owner (created during build)
         password: "{oracle_config["tproch"]["password"]}"
         degree_of_parallel: 8              # Oracle parallel query degree"""
+    elif db_type_str == "postgres":
+        db_defaults = """    postgres:
+      port: 5432
+      sslmode: prefer                      # prefer|require|disable
+      tprocc:
+        database_name: tpcc                # database created during build phase
+        user: tpcc                         # schema owner (created during build)
+        password: tpcc
+        stored_procedures: true            # build and drive via stored procedures
+      tproch:
+        database_name: tpch                # database created during build phase
+        user: tpch
+        password: tpch
+        max_parallel_workers: 8            # parallel workers for analytic queries"""
     else:
         db_defaults = """    mssql:
       port: 1433
@@ -222,6 +284,26 @@ storage_metrics:
   #   poll_interval: 5                   # collection interval in seconds
   #   verify_ssl: false"""
 
+    # Only the selected backend's settings are emitted. A container user who
+    # finds a Kubernetes block in their config reasonably concludes they need
+    # a cluster.
+    if backend_str == "kubernetes":
+        backend_section = f"""
+# ============================================================================
+# KUBERNETES SETTINGS
+# ============================================================================
+kubernetes:
+  namespace: {namespace or "hammerdb"}                 # namespace for benchmark jobs (must exist)
+  job_ttl: 86400                         # auto-cleanup completed jobs after N seconds (24h)"""
+    else:
+        backend_section = """
+# ============================================================================
+# CONTAINER SETTINGS
+# ============================================================================
+container:
+  runtime: auto                          # auto|podman|docker
+  # network: ""                          # attach workers to a named network"""
+
     # Assemble full config
     return f"""# ============================================================================
 # HammerDB-Scale Configuration
@@ -238,8 +320,9 @@ storage_metrics:
 # ============================================================================
 
 name: {name}
-description: "{db_type_str.upper()} {benchmark_str.upper()} benchmark — {len(hosts)} target{"s" if len(hosts) != 1 else ""}"
+description: "{db_type_str.upper()} {benchmark_str.upper()} benchmark, {len(hosts)} target{"s" if len(hosts) != 1 else ""}"
 default_benchmark: {benchmark_str}
+backend: {backend_str}                   # podman|docker|kubernetes
 
 # ============================================================================
 # DATABASE TARGETS
@@ -282,12 +365,7 @@ resources:
     memory: "{lim_memory}"
     cpu: "{lim_cpu}"
 
-# ============================================================================
-# KUBERNETES SETTINGS
-# ============================================================================
-kubernetes:
-  namespace: {namespace}                 # namespace for benchmark jobs (must exist)
-  job_ttl: 86400                         # auto-cleanup completed jobs after N seconds (24h)
+{backend_section}
 {storage_section}
 """
 
@@ -419,9 +497,16 @@ def init(
 
 @app.command()
 def validate(
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
     skip_connectivity: bool = typer.Option(
         False, "--skip-connectivity", help="Skip network connectivity checks."
+    ),
+    from_cluster: bool = typer.Option(
+        False,
+        "--from-cluster",
+        help="Test connectivity from where the benchmark runs, not this machine.",
     ),
 ) -> None:
     """Multi-layer validation with clear, actionable output."""
@@ -481,52 +566,52 @@ def validate(
     for w in warnings:
         print_warning(w)
 
-    # Layer 4: Prerequisites
+    # Layer 4: Prerequisites for the configured backend
     console.print("\nChecking prerequisites...")
-    helm_path = shutil.which("helm")
-    if helm_path:
-        try:
-            result = subprocess.run(
-                [helm_path, "version", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            print_success(f"helm found ({result.stdout.strip()})")
-        except Exception:
-            print_warning("helm found but version check failed")
-    else:
-        print_error("helm not found (install from https://helm.sh)")
-        errors_found = True
+    uses_kubernetes = config.backend.value == "kubernetes"
 
-    kubectl_path = shutil.which("kubectl")
-    if kubectl_path:
-        try:
-            result = subprocess.run(
-                [kubectl_path, "version", "--client", "--short"],
-                capture_output=True,
-                text=True,
-                timeout=10,
+    if uses_kubernetes:
+        helm_path = shutil.which("helm")
+        if helm_path:
+            helm_version = _tool_version(helm_path, "helm")
+            print_success(f"helm found ({helm_version or 'version unknown'})")
+        else:
+            print_error("helm not found (install from https://helm.sh)")
+            errors_found = True
+
+        kubectl_path = shutil.which("kubectl")
+        if kubectl_path:
+            kubectl_version = _tool_version(kubectl_path, "kubectl")
+            print_success(f"kubectl found ({kubectl_version or 'version unknown'})")
+            print_success(f"Current context: {_kubectl_context(kubectl_path)}")
+        else:
+            print_error(
+                "kubectl not found "
+                "(install from https://kubernetes.io/docs/tasks/tools/)"
             )
-            ctx_result = subprocess.run(
-                [kubectl_path, "config", "current-context"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            ctx = ctx_result.stdout.strip() if ctx_result.returncode == 0 else "unknown"
-            print_success(f"kubectl found ({result.stdout.strip()})")
-            print_success(f"Current context: {ctx}")
-        except Exception:
-            print_warning("kubectl found but version check failed")
+            errors_found = True
     else:
-        print_error(
-            "kubectl not found (install from https://kubernetes.io/docs/tasks/tools/)"
+        # Container backend: helm and kubectl are irrelevant.
+        from hammerdb_scale.runtime.container import (
+            ContainerRuntimeError,
+            detect_runtime,
         )
-        errors_found = True
+
+        try:
+            requested = config.container.runtime.value
+            runtime = detect_runtime(None if requested == "auto" else requested)
+            runtime_path = shutil.which(runtime)
+            runtime_version = (
+                _tool_version(runtime_path, runtime) if runtime_path else None
+            )
+            print_success(f"{runtime} found ({runtime_version or 'version unknown'})")
+        except ContainerRuntimeError as e:
+            print_error(str(e))
+            errors_found = True
 
     # Layer 5: K8s access
-    if kubectl_path:
+    if uses_kubernetes and shutil.which("kubectl"):
+        kubectl_path = shutil.which("kubectl")
         console.print("\nChecking Kubernetes access...")
         ns = config.kubernetes.namespace
         try:
@@ -543,36 +628,28 @@ def validate(
                     f"Namespace '{ns}' does not exist. "
                     f"It will be created during deployment."
                 )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             print_warning("Could not check namespace")
 
-        try:
-            result = subprocess.run(
-                [kubectl_path, "auth", "can-i", "create", "jobs", "-n", ns],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and "yes" in result.stdout.lower():
-                print_success("Can create Jobs in namespace")
-            else:
-                print_warning("Cannot verify Job creation permissions")
-        except Exception:
-            print_warning("Could not check permissions")
+        # Secrets are only needed when credentials go through one.
+        resources = ["jobs", "configmaps"]
+        if config.kubernetes.use_secrets:
+            resources.append("secrets")
 
-        try:
-            result = subprocess.run(
-                [kubectl_path, "auth", "can-i", "create", "configmaps", "-n", ns],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and "yes" in result.stdout.lower():
-                print_success("Can create ConfigMaps in namespace")
-            else:
-                print_warning("Cannot verify ConfigMap creation permissions")
-        except Exception:
-            print_warning("Could not check permissions")
+        for resource in resources:
+            try:
+                result = subprocess.run(
+                    [kubectl_path, "auth", "can-i", "create", resource, "-n", ns],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and "yes" in result.stdout.lower():
+                    print_success(f"Can create {resource} in namespace")
+                else:
+                    print_warning(f"Cannot verify {resource} creation permissions")
+            except (OSError, subprocess.SubprocessError):
+                print_warning(f"Could not check {resource} permissions")
 
     # Layer 6: Database connectivity
     if not skip_connectivity:
@@ -580,6 +657,15 @@ def validate(
         conn_failures = _check_connectivity(config)
         if conn_failures:
             errors_found = True
+
+        if from_cluster:
+            if _check_connectivity_from_cluster(config, namespace=None):
+                errors_found = True
+        else:
+            console.print(
+                "\n[dim]Checked from this machine. The benchmark runs elsewhere; "
+                "use --from-cluster to test from there.[/dim]"
+            )
     else:
         console.print("\n[dim]Skipping connectivity checks (--skip-connectivity)[/dim]")
 
@@ -592,6 +678,44 @@ def validate(
         raise typer.Exit(1)
     else:
         console.print(f"\nValidation complete: {warning_count} warning(s), 0 errors.")
+
+
+def _check_connectivity_from_cluster(
+    config: HammerDBScaleConfig, namespace: Optional[str]
+) -> int:
+    """Probe the databases from where the benchmark actually runs.
+
+    Passing the workstation check proves nothing about the pod's network
+    position, so this repeats it from there. Returns the failure count.
+    """
+    from hammerdb_scale.runtime import get_backend
+    from hammerdb_scale.runtime.preflight import (
+        check_from_container,
+        check_from_kubernetes,
+    )
+
+    image_cfg = config.targets.defaults.image
+    image = f"{image_cfg.repository}:{image_cfg.tag}"
+    backend = get_backend(config, namespace)
+
+    console.print(f"\nChecking connectivity from {backend.name}...")
+    try:
+        if backend.name == "kubernetes":
+            results = check_from_kubernetes(config, backend.namespace, image)
+        else:
+            results = check_from_container(config, backend.runtime, image)
+    except Exception as e:
+        print_error(f"Could not run the in-cluster check: {e}")
+        return 1
+
+    failures = 0
+    for entry in results:
+        if entry.get("ok"):
+            print_success(f"{entry['name']}  reachable from {backend.name}")
+        else:
+            print_error(f"{entry['name']}  {entry.get('error', 'unreachable')}")
+            failures += 1
+    return failures
 
 
 def _check_connectivity(config: HammerDBScaleConfig) -> int:
@@ -664,6 +788,34 @@ def _check_connectivity(config: HammerDBScaleConfig) -> int:
             except Exception as e:
                 return (name, False, f"{host}:{port}  {e}")
 
+        elif db_type == "postgres":
+            pg_cfg = target.get("postgres", {})
+            port = pg_cfg.get("port", 5432)
+            try:
+                import psycopg2
+
+                conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    user=username,
+                    password=password,
+                    dbname="postgres",
+                    connect_timeout=10,
+                )
+                with conn.cursor() as cur:
+                    cur.execute("select version()")
+                    server = cur.fetchone()[0].split(",")[0]
+                conn.close()
+                return (name, True, f"{host}:{port}  Connected ({server})")
+            except ImportError:
+                return (
+                    name,
+                    False,
+                    "psycopg2 not installed. Install with: pip install psycopg2-binary",
+                )
+            except Exception as e:
+                return (name, False, f"{host}:{port}  {e}")
+
         return (name, False, f"Unknown database type: {db_type}")
 
     failures = 0
@@ -699,7 +851,9 @@ def build(
     benchmark: Optional[str] = typer.Option(
         None, "--benchmark", help="tprocc or tproch."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID override."),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Override namespace."
@@ -710,15 +864,9 @@ def build(
     wait: bool = typer.Option(False, "--wait", help="Wait for all jobs to complete."),
     timeout: int = typer.Option(7200, "--timeout", help="Wait timeout in seconds."),
 ) -> None:
-    """Create database schemas. Wraps helm install with phase=build."""
-    from hammerdb_scale.helm.deployer import helm_install
-    from hammerdb_scale.helm.values import generate_helm_values
+    """Create database schemas on every target."""
     from hammerdb_scale.k8s.jobs import resolve_benchmark
-    from hammerdb_scale.k8s.naming import (
-        generate_release_name,
-        generate_run_hash,
-        generate_test_id,
-    )
+    from hammerdb_scale.k8s.naming import generate_test_id
 
     config_path = file or _state.get("file")
     config = load_config(discover_config_file(config_path))
@@ -730,8 +878,6 @@ def build(
         print_error(str(e))
         raise typer.Exit(1)
     test_id = id or generate_test_id(config.name)
-    run_hash = generate_run_hash(config.name, test_id)
-    release_name = generate_release_name("build", run_hash)
 
     target_count = len(config.targets.hosts)
     from hammerdb_scale.output import print_banner
@@ -747,27 +893,24 @@ def build(
             config.name, bm, target_count, f"SF {config.hammerdb.tproch.scale_factor}"
         )
 
-    values = generate_helm_values(config, "build", bm, test_id)
-    chart_path = get_chart_path()
-
-    console.print("Deploying jobs...")
-    result = helm_install(release_name, chart_path, ns, values, dry_run=dry_run)
-
+    backend, names = _deploy(
+        config, ns, phase="build", benchmark=bm, test_id=test_id, dry_run=dry_run
+    )
     if dry_run:
-        console.print(result.stdout)
         return
 
-    # Print deployed jobs
-    for i, host in enumerate(config.targets.hosts):
-        job_name = f"hdb-build-{i:02d}-{run_hash}"
-        print_success(f"{job_name}  ({host.name})")
+    for name, host in zip(names, config.targets.hosts):
+        print_success(f"{name}  ({host.name})")
 
-    console.print(f"\n{target_count} build jobs deployed to namespace '{ns}'.\n")
+    console.print(f"\n{target_count} build jobs deployed via {backend.name}.\n")
     console.print(f"Monitor progress:  hammerdb-scale status --id {test_id}")
     console.print(f"View logs:         hammerdb-scale logs --id {test_id}")
 
     if wait:
-        _wait_for_jobs(ns, test_id, "build", timeout)
+        from hammerdb_scale.runtime.resolve import wait_for_completion
+
+        if not wait_for_completion(backend, test_id, "build", timeout):
+            raise typer.Exit(1)
 
 
 @app.command()
@@ -778,7 +921,9 @@ def run(
     build_first: bool = typer.Option(
         False, "--build", help="Build schemas before running."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID override."),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Override namespace."
@@ -789,17 +934,12 @@ def run(
         3600, "--timeout", help="Wait timeout seconds for run phase."
     ),
 ) -> None:
-    """Execute the benchmark. Wraps helm install with phase=load."""
+    """Execute the benchmark workload against every target."""
     from hammerdb_scale.constants import BUILD_TIMEOUT_DEFAULT
-    from hammerdb_scale.helm.deployer import helm_install, helm_uninstall
-    from hammerdb_scale.helm.values import generate_helm_values
     from hammerdb_scale.k8s.jobs import resolve_benchmark
-    from hammerdb_scale.k8s.naming import (
-        generate_release_name,
-        generate_run_hash,
-        generate_test_id,
-    )
+    from hammerdb_scale.k8s.naming import generate_test_id
     from hammerdb_scale.output import print_banner
+    from hammerdb_scale.runtime.resolve import wait_for_completion
 
     config_path = file or _state.get("file")
     config = load_config(discover_config_file(config_path))
@@ -811,22 +951,21 @@ def run(
         print_error(str(e))
         raise typer.Exit(1)
     test_id = id or generate_test_id(config.name)
-    run_hash = generate_run_hash(config.name, test_id)
     target_count = len(config.targets.hosts)
 
     # --build: build schemas first
     if build_first:
         console.print("Building schemas first...\n")
-        build_release = generate_release_name("build", run_hash)
-        build_values = generate_helm_values(config, "build", bm, test_id)
-        chart_path = get_chart_path()
-
-        helm_install(build_release, chart_path, ns, build_values, dry_run=dry_run)
+        build_backend, _ = _deploy(
+            config, ns, phase="build", benchmark=bm, test_id=test_id, dry_run=dry_run
+        )
         if dry_run:
             return
 
         console.print("Build jobs deployed. Waiting for completion...\n")
-        success = _wait_for_jobs(ns, test_id, "build", BUILD_TIMEOUT_DEFAULT)
+        success = wait_for_completion(
+            build_backend, test_id, "build", BUILD_TIMEOUT_DEFAULT
+        )
 
         if not success:
             console.print(
@@ -837,15 +976,11 @@ def run(
             raise typer.Exit(1)
 
         console.print("\n[green]All builds completed successfully.[/green]\n")
-        # Clean build release before proceeding
+        # Remove the finished build workloads before starting the run phase.
         try:
-            helm_uninstall(build_release, ns)
+            build_backend.remove(test_id=test_id)
         except Exception:
             pass  # Non-fatal
-
-    run_release = generate_release_name("run", run_hash)
-    run_values = generate_helm_values(config, "run", bm, test_id)
-    chart_path = get_chart_path()
 
     detail = ""
     if bm == "tprocc":
@@ -863,28 +998,27 @@ def run(
         detail = f"SF {config.hammerdb.tproch.scale_factor}"
         print_banner(config.name, bm, target_count, detail)
 
-    console.print("Deploying jobs...")
-    result = helm_install(run_release, chart_path, ns, run_values, dry_run=dry_run)
-
+    backend, names = _deploy(
+        config, ns, phase="run", benchmark=bm, test_id=test_id, dry_run=dry_run
+    )
     if dry_run:
-        console.print(result.stdout)
         return
 
-    for i, host in enumerate(config.targets.hosts):
-        job_name = f"hdb-run-{i:02d}-{run_hash}"
+    for i, (name, host) in enumerate(zip(names, config.targets.hosts)):
         extra = ""
         if i == 0 and config.storage_metrics.enabled:
             extra = "  [Pure Storage collector active]"
-        print_success(f"{job_name}  ({host.name}){extra}")
+        print_success(f"{name}  ({host.name}){extra}")
 
-    console.print(f"\n{target_count} benchmark jobs deployed to namespace '{ns}'.\n")
+    console.print(f"\n{target_count} benchmark jobs deployed via {backend.name}.\n")
     console.print(
         f"When complete:     hammerdb-scale results --benchmark {bm} --id {test_id}"
     )
     console.print(f"Generate report:   hammerdb-scale report --id {test_id}")
 
     if wait:
-        _wait_for_jobs(ns, test_id, "load", timeout)
+        if not wait_for_completion(backend, test_id, "load", timeout):
+            raise typer.Exit(1)
 
 
 @app.command()
@@ -900,18 +1034,12 @@ def status(
     import json as json_mod
     import time
 
-    from hammerdb_scale.k8s.jobs import (
-        discover_jobs,
-        get_job_duration,
-        get_job_status,
-        get_job_target_host,
-        get_job_target_name,
-        resolve_test_id,
-    )
     from hammerdb_scale.results.parsers import get_parser
+    from hammerdb_scale.runtime.resolve import resolve_test_id
 
     config_path = _state.get("file")
     deploy_name = None
+    config = None
     try:
         config = load_config(discover_config_file(config_path))
         ns = namespace or config.kubernetes.namespace
@@ -919,34 +1047,35 @@ def status(
     except ConfigError:
         ns = namespace or DEFAULT_NAMESPACE
 
-    test_id = resolve_test_id(id, ns, deployment_name=deploy_name)
+    backend = _backend_for(config, ns)
+    test_id = resolve_test_id(backend, id, deployment_name=deploy_name)
+    bm = (
+        config.default_benchmark.value
+        if config is not None and config.default_benchmark
+        else "tprocc"
+    )
 
     while True:
-        jobs = discover_jobs(ns, test_id)
-        if not jobs:
-            console.print(f"No jobs found for test '{test_id}' in namespace '{ns}'.")
+        workloads = backend.list_workloads(test_id)
+        if not workloads:
+            console.print(f"No jobs found for test '{test_id}'.")
             raise typer.Exit(1)
 
-        first_labels = jobs[0].get("metadata", {}).get("labels", {})
-        phase = first_labels.get("hammerdb.io/phase", "unknown")
-        bm = first_labels.get("hammerdb.io/benchmark", "unknown")
-
         if json_output:
-            data = []
-            for job in jobs:
-                data.append(
-                    {
-                        "target": get_job_target_name(job),
-                        "host": get_job_target_host(job),
-                        "status": get_job_status(job),
-                        "duration": get_job_duration(job),
-                    }
-                )
+            data = [
+                {
+                    "target": w.target_name,
+                    "host": w.target_host,
+                    "status": w.status,
+                    "duration": w.duration_seconds,
+                }
+                for w in workloads
+            ]
             console.print(json_mod.dumps(data, indent=2))
             return
 
         console.print(f"\nTest: {test_id}")
-        console.print(f"Phase: {phase} | Benchmark: {bm} | Namespace: {ns}\n")
+        console.print(f"Benchmark: {bm} | Backend: {backend.name}\n")
 
         table = Table()
         table.add_column("#", style="dim")
@@ -964,12 +1093,11 @@ def status(
         failed = 0
         running = 0
 
-        for i, job in enumerate(jobs):
-            job_status = get_job_status(job)
-            duration = get_job_duration(job)
-            dur_str = _format_duration(duration) if duration else "-"
-            target_name = get_job_target_name(job)
-            target_host = get_job_target_host(job)
+        for i, w in enumerate(workloads):
+            job_status = w.status
+            dur_str = (
+                _format_duration(w.duration_seconds) if w.duration_seconds else "-"
+            )
 
             status_style = (
                 "green"
@@ -985,18 +1113,9 @@ def status(
 
             if job_status == "Completed":
                 completed += 1
-                db_type = (
-                    job.get("metadata", {})
-                    .get("labels", {})
-                    .get("hammerdb.io/database-type", "oracle")
-                )
                 try:
-                    parser = get_parser(db_type)
-                    from hammerdb_scale.k8s.jobs import get_job_logs
-
-                    log_text = get_job_logs(
-                        ns, job.get("metadata", {}).get("name", ""), tail=200
-                    )
+                    parser = get_parser(w.database_type)
+                    log_text = backend.get_logs(w.name, tail=200)
                     if bm == "tprocc":
                         result = parser.parse_tprocc(log_text)
                         if result:
@@ -1015,8 +1134,8 @@ def status(
 
             row = [
                 str(i),
-                target_name,
-                target_host,
+                w.target_name,
+                w.target_host,
                 f"[{status_style}]{job_status}[/{status_style}]",
                 dur_str,
             ]
@@ -1050,15 +1169,11 @@ def logs(
     tail: int = typer.Option(100, "--tail", help="Lines from end."),
 ) -> None:
     """Stream or fetch logs from benchmark jobs."""
-    from hammerdb_scale.k8s.jobs import (
-        discover_jobs,
-        get_job_logs,
-        get_job_target_name,
-        resolve_test_id,
-    )
+    from hammerdb_scale.runtime.resolve import resolve_test_id
 
     config_path = _state.get("file")
     deploy_name = None
+    config = None
     try:
         config = load_config(discover_config_file(config_path))
         ns = namespace or config.kubernetes.namespace
@@ -1066,33 +1181,27 @@ def logs(
     except ConfigError:
         ns = namespace or DEFAULT_NAMESPACE
 
-    test_id = resolve_test_id(id, ns, deployment_name=deploy_name)
-    jobs = discover_jobs(ns, test_id)
+    backend = _backend_for(config, ns)
+    test_id = resolve_test_id(backend, id, deployment_name=deploy_name)
+    workloads = backend.list_workloads(test_id)
 
-    if not jobs:
+    if not workloads:
         console.print(f"No jobs found for test '{test_id}'.")
         raise typer.Exit(1)
 
     if target:
-        # Find job for specific target
-        matching = [j for j in jobs if get_job_target_name(j) == target]
+        matching = [w for w in workloads if w.target_name == target]
         if not matching:
             console.print(f"[red]No job found for target '{target}'.[/red]")
             raise typer.Exit(1)
-        job = matching[0]
-        job_name = job.get("metadata", {}).get("name", "")
-        log_text = get_job_logs(ns, job_name, tail=tail, follow=follow)
-        console.print(log_text)
+        console.print(backend.get_logs(matching[0].name, tail=tail))
     else:
         # Show all logs, prefixed with target name
         colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
-        for i, job in enumerate(jobs):
-            target_name = get_job_target_name(job)
-            job_name = job.get("metadata", {}).get("name", "")
+        for i, w in enumerate(workloads):
             color = colors[i % len(colors)]
-            log_text = get_job_logs(ns, job_name, tail=tail)
-            for line in log_text.splitlines():
-                console.print(f"[{color}]{target_name}[/{color}] {line}")
+            for line in backend.get_logs(w.name, tail=tail).splitlines():
+                console.print(f"[{color}]{w.target_name}[/{color}] {line}")
 
 
 @app.command()
@@ -1101,7 +1210,9 @@ def results(
         None, "--benchmark", help="tprocc or tproch."
     ),
     id: Optional[str] = typer.Option(None, "--id", help="Test ID."),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
     namespace: Optional[str] = typer.Option(
         None, "-n", "--namespace", help="Namespace."
     ),
@@ -1113,23 +1224,25 @@ def results(
     """Aggregate results from completed jobs."""
     import json as json_mod
 
-    from hammerdb_scale.k8s.jobs import resolve_benchmark, resolve_test_id
+    from hammerdb_scale.k8s.jobs import resolve_benchmark
     from hammerdb_scale.results.aggregator import aggregate_results
     from hammerdb_scale.results.storage import load_results, save_results
+    from hammerdb_scale.runtime.resolve import resolve_test_id
 
     config_path = file or _state.get("file")
     config = load_config(discover_config_file(config_path))
     ns = namespace or config.kubernetes.namespace
 
     bm = resolve_benchmark(benchmark, config, "results")
-    test_id = resolve_test_id(id, ns, deployment_name=config.name)
+    backend = _backend_for(config, ns)
+    test_id = resolve_test_id(backend, id, deployment_name=config.name)
 
     results_dir = output or Path("./results")
 
-    # Try aggregating from K8s first, fall back to local
+    # Try aggregating from the backend first, fall back to stored results
     try:
         summary, logs_dict, pure_metrics = aggregate_results(
-            config, ns, test_id, bm, results_dir
+            config, backend, test_id, bm, results_dir
         )
         # Only save if K8s returned actual target data
         if summary.get("targets"):
@@ -1144,12 +1257,24 @@ def results(
                 raise typer.Exit(1)
     except typer.Exit:
         raise
-    except Exception:
-        # Fall back to local results
+    except Exception as e:
+        # The backend could not be queried (unreachable cluster, expired
+        # credentials, container runtime down). Stored results may still exist,
+        # so try those, but never let the real cause vanish: reporting
+        # "No results found" for an auth failure sends the user hunting in
+        # entirely the wrong place.
         summary = load_results(test_id, results_dir)
         if not summary:
-            console.print("[red]No results found.[/red]")
+            print_error(f"Could not read results from the backend: {e}")
+            console.print(
+                f"[red]No stored results for '{test_id}' either.[/red]\n"
+                f"If the backend is reachable, check that the test ID is correct."
+            )
             raise typer.Exit(1)
+        print_warning(
+            f"Could not reach the backend ({type(e).__name__}); "
+            f"showing previously stored results."
+        )
 
     if json_output:
         console.print(json_mod.dumps(summary, indent=2))
@@ -1176,17 +1301,19 @@ def report(
         None, "-o", "--output", help="Output HTML file."
     ),
     open_browser: bool = typer.Option(False, "--open", help="Open in default browser."),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
 ) -> None:
     """Generate a self-contained HTML scorecard."""
     import webbrowser
 
-    from hammerdb_scale.k8s.jobs import resolve_test_id
     from hammerdb_scale.results.storage import (
         load_results,
         load_pure_metrics,
         results_exist,
     )
+    from hammerdb_scale.runtime.resolve import resolve_test_id
 
     config_path = file or _state.get("file")
     config = None
@@ -1198,7 +1325,8 @@ def report(
     except ConfigError:
         ns = DEFAULT_NAMESPACE
 
-    test_id = resolve_test_id(id, ns, deployment_name=deploy_name)
+    backend = _backend_for(config, ns)
+    test_id = resolve_test_id(backend, id, deployment_name=deploy_name)
     results_dir = Path("./results")
 
     # Auto-run results if not aggregated yet
@@ -1217,7 +1345,7 @@ def report(
                 config.default_benchmark.value if config.default_benchmark else "tprocc"
             )
             summary, logs_dict, pure_metrics = aggregate_results(
-                config, ns, test_id, bm, results_dir
+                config, backend, test_id, bm, results_dir
             )
             if summary.get("targets"):
                 save_results(test_id, summary, logs_dict, pure_metrics, results_dir)
@@ -1276,7 +1404,9 @@ def clean(
     benchmark: Optional[str] = typer.Option(
         None, "--benchmark", help="Required for --database."
     ),
-    file: Optional[Path] = typer.Option(None, "-f", "--file", help="Config file."),
+    file: Optional[Path] = typer.Option(
+        None, "-f", "-c", "--file", "--config", help="Config file."
+    ),
     target: Optional[str] = typer.Option(
         None, "--target", help="Clean specific target only."
     ),
@@ -1320,20 +1450,32 @@ def clean(
     config_path = file or _state.get("file")
 
     if resources:
+        clean_config = None
         try:
-            config = load_config(discover_config_file(config_path))
-            ns = namespace or config.kubernetes.namespace
+            clean_config = load_config(discover_config_file(config_path))
+            ns = namespace or clean_config.kubernetes.namespace
         except ConfigError:
             ns = namespace or DEFAULT_NAMESPACE
 
-        from hammerdb_scale.clean.resources import clean_resources
+        backend = _backend_for(clean_config, ns)
+        if backend.name == "kubernetes":
+            from hammerdb_scale.clean.resources import clean_resources
 
-        clean_resources(
-            namespace=ns,
-            test_id=id,
-            everything=everything,
-            force=force,
-        )
+            clean_resources(
+                namespace=ns,
+                test_id=id,
+                everything=everything,
+                force=force,
+            )
+        else:
+            from hammerdb_scale.clean.resources import clean_container_resources
+
+            clean_container_resources(
+                backend,
+                test_id=id,
+                everything=everything,
+                force=force,
+            )
 
     if database:
         config = load_config(discover_config_file(config_path))
@@ -1349,6 +1491,73 @@ def clean(
         )
 
 
+def _backend_for(config: Optional[HammerDBScaleConfig], namespace: str):
+    """Get a backend, falling back to Kubernetes when no config was found.
+
+    Commands like `status` and `logs` can run without a config file, in which
+    case there is nothing to select a backend from.
+    """
+    from hammerdb_scale.runtime import get_backend
+    from hammerdb_scale.runtime.kubernetes import KubernetesBackend
+
+    if config is None:
+        return KubernetesBackend(namespace=namespace)
+    return get_backend(config, namespace)
+
+
+def _deploy(
+    config: HammerDBScaleConfig,
+    namespace: str,
+    *,
+    phase: str,
+    benchmark: str,
+    test_id: str,
+    dry_run: bool = False,
+):
+    """Deploy one workload per target using the configured backend.
+
+    Returns the backend and the workload names it created.
+    """
+    from hammerdb_scale.config.defaults import expand_targets
+    from hammerdb_scale.runtime import get_backend
+    from hammerdb_scale.runtime.environment import build_target_env
+
+    backend = get_backend(config, namespace)
+
+    problems = backend.preflight()
+    if problems:
+        for problem in problems:
+            print_error(problem)
+        raise typer.Exit(1)
+
+    targets = expand_targets(config)
+    envs = [
+        build_target_env(
+            config,
+            target,
+            phase=phase,
+            benchmark=benchmark,
+            test_id=test_id,
+            target_index=i,
+        )
+        for i, target in enumerate(targets)
+    ]
+
+    image = config.targets.defaults.image
+    console.print(f"Deploying jobs via {backend.name}...")
+    names = backend.deploy(
+        targets,
+        envs,
+        test_id=test_id,
+        phase=phase,
+        benchmark=benchmark,
+        image=f"{image.repository}:{image.tag}",
+        pull_policy=image.pull_policy.value,
+        dry_run=dry_run,
+    )
+    return backend, names
+
+
 def _format_duration(seconds: int | None) -> str:
     """Format seconds as 'Xm Ys'."""
     if seconds is None:
@@ -1358,55 +1567,6 @@ def _format_duration(seconds: int | None) -> str:
     if minutes > 0:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
-
-
-def _wait_for_jobs(namespace: str, test_id: str, phase: str, timeout: int) -> bool:
-    """Poll job status until all complete or timeout. Returns True if all succeeded."""
-    import time
-
-    from hammerdb_scale.k8s.jobs import (
-        discover_jobs,
-        get_job_status,
-        get_job_target_name,
-    )
-    from hammerdb_scale.constants import POLL_INTERVAL
-
-    start = time.time()
-    while time.time() - start < timeout:
-        jobs = discover_jobs(namespace, test_id, phase=phase)
-        if not jobs:
-            time.sleep(POLL_INTERVAL)
-            continue
-
-        statuses = [(get_job_target_name(j), get_job_status(j)) for j in jobs]
-        completed = sum(1 for _, s in statuses if s == "Completed")
-        failed = sum(1 for _, s in statuses if s == "Failed")
-        total = len(statuses)
-
-        # Show progress
-        console.print(
-            f"  [{completed}/{total}] completed, {failed} failed",
-            end="\r",
-        )
-
-        if completed + failed >= total:
-            console.print()  # New line after progress
-            if failed > 0:
-                for name, s in statuses:
-                    if s == "Failed":
-                        print_error(f"{name} Failed")
-                    else:
-                        print_success(f"{name} {s}")
-                return False
-            else:
-                for name, s in statuses:
-                    print_success(f"{name} {s}")
-                return True
-
-        time.sleep(POLL_INTERVAL)
-
-    console.print(f"\n[yellow]Timeout ({timeout}s) reached.[/yellow]")
-    return False
 
 
 def _display_results_table(summary: dict, benchmark: str) -> None:

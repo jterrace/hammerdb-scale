@@ -6,6 +6,8 @@
 pip install hammerdb-scale
 ```
 
+v1.x only ran on Kubernetes, and everything below describes that same path in v2: `helm uninstall`, Job cleanup, and the rest. If you'd rather run against a single host with podman or docker instead, most of the command mapping below still applies; the difference is `backend: podman` (or `docker`) in your config instead of `backend: kubernetes` (or omitting it), and no Helm release or cluster involved. See [CONFIGURATION.md](CONFIGURATION.md) for the container-backend config shape.
+
 ## Migrate Config
 
 ```bash

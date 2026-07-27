@@ -1,0 +1,700 @@
+"""Container execution backend for podman and docker.
+
+Runs one HammerDB container per database target on the local host, with no
+Kubernetes involved. This is the low-friction path: a user needs a container
+runtime and a config file rather than a cluster, a kubeconfig, helm, kubectl
+and RBAC to create Jobs.
+
+podman and docker expose a compatible CLI for everything used here, so a single
+implementation drives both. podman is preferred when present because it is
+rootless and daemonless.
+
+Labels carry the same metadata the Kubernetes backend puts in Job labels, which
+is what lets test-id resolution, status and log retrieval behave identically on
+either backend.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from hammerdb_scale.constants import (
+    DEFAULT_HAMMERDB_HOME,
+    PHASE_MAP,
+    HammerDBScaleError,
+    get_chart_path,
+)
+from hammerdb_scale.runtime.base import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    WorkloadRef,
+)
+
+# Label keys, mirroring the Kubernetes label scheme.
+LABEL_MANAGED = "hammerdb.io/managed-by"
+LABEL_TEST_ID = "hammerdb.io/test-id"
+LABEL_PHASE = "hammerdb.io/phase"
+LABEL_TARGET = "hammerdb.io/target-name"
+LABEL_TARGET_HOST = "hammerdb.io/target-host"
+LABEL_DB_TYPE = "hammerdb.io/database-type"
+LABEL_INDEX = "hammerdb.io/target-index"
+# Mirrors the Kubernetes label of the same name. Without it, every run on a
+# host shares one namespace, so `results` after one config's run can pick up a
+# different config's containers.
+LABEL_DEPLOYMENT = "hammerdb.io/deployment-name"
+
+MANAGED_VALUE = "hammerdb-scale"
+
+# Kubernetes memory suffixes. The binary ones are what resources.limits.memory
+# normally uses; the decimal ones are accepted by Kubernetes so we accept them
+# too rather than silently mis-sizing a container.
+_MEMORY_SUFFIXES = {
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+    "K": 1000,
+    "M": 1000**2,
+    "G": 1000**3,
+    "T": 1000**4,
+}
+
+
+class ContainerRuntimeError(HammerDBScaleError):
+    """The container runtime is missing or a command against it failed."""
+
+
+def k8s_memory_to_bytes(value: str) -> int | None:
+    """Convert a Kubernetes memory quantity to bytes.
+
+    The `resources` block is shared by both backends and is written in
+    Kubernetes units, so the container path has to translate rather than
+    ignore it. Returns None when the value cannot be understood, so an odd
+    quantity degrades to "no limit" rather than aborting the run.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    for suffix, factor in sorted(_MEMORY_SUFFIXES.items(), key=lambda kv: -len(kv[0])):
+        if text.endswith(suffix):
+            try:
+                return int(float(text[: -len(suffix)]) * factor)
+            except ValueError:
+                return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def k8s_cpu_to_cores(value: str) -> float | None:
+    """Convert a Kubernetes CPU quantity to a core count.
+
+    Accepts both plain cores ("8") and millicores ("500m").
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("m"):
+            return float(text[:-1]) / 1000.0
+        return float(text)
+    except ValueError:
+        return None
+
+
+def selinux_is_enforcing() -> bool:
+    """True when the host runs SELinux and would block an unlabelled mount.
+
+    Only such hosts need the :z relabel suffix. Docker Desktop's VM has
+    historically rejected or mishandled it, so applying it unconditionally
+    turns the first run on a Mac into a mount error.
+    """
+    try:
+        enforce = Path("/sys/fs/selinux/enforce")
+        return enforce.exists() and enforce.read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def mount_suffix() -> str:
+    """Volume options for the read-only script mount."""
+    return "ro,z" if selinux_is_enforcing() else "ro"
+
+
+def detect_runtime(preferred: str | None = None) -> str:
+    """Find an available container runtime.
+
+    Prefers podman (rootless, daemonless) over docker unless told otherwise.
+    """
+    candidates = [preferred] if preferred else ["podman", "docker"]
+    for name in candidates:
+        if name and shutil.which(name):
+            return name
+    raise ContainerRuntimeError(
+        "No container runtime found. Install podman "
+        "(https://podman.io/getting-started/installation) or docker "
+        "(https://docs.docker.com/get-docker/), or set backend: kubernetes."
+    )
+
+
+class ContainerBackend:
+    """Runs HammerDB workloads as local containers."""
+
+    def __init__(
+        self,
+        runtime: str | None = None,
+        network: str | None = None,
+        scripts_dir: Path | None = None,
+        hammerdb_home: str | None = None,
+        memory_limit: str | None = None,
+        cpu_limit: str | None = None,
+        deployment_name: str | None = None,
+    ) -> None:
+        self.runtime = detect_runtime(runtime)
+        self.name = self.runtime
+        self.network = network
+        self._scripts_dir = scripts_dir
+        self.hammerdb_home = hammerdb_home
+        self.memory_limit = memory_limit
+        self.cpu_limit = cpu_limit
+        self.deployment_name = deployment_name
+
+    def _scope_filters(self) -> list[str]:
+        """ps filters restricting results to this config's containers.
+
+        Containers deployed before deployment-name labelling carry no such
+        label, so scoping is applied only when a name is known; that keeps a
+        mixed host readable rather than hiding older runs entirely.
+        """
+        filters = ["--filter", f"label={LABEL_MANAGED}={MANAGED_VALUE}"]
+        if self.deployment_name:
+            filters.extend(
+                ["--filter", f"label={LABEL_DEPLOYMENT}={self.deployment_name}"]
+            )
+        return filters
+
+    def _resource_args(self) -> list[str]:
+        """Translate the shared `resources.limits` block for this runtime.
+
+        Both podman and docker accept --memory/--cpus, so a limit set in the
+        config must be applied here too. Previously the block was read only by
+        the Helm path, so a container run silently ignored it and the user
+        believed the driver was capped when it was not.
+        """
+        args: list[str] = []
+        if self.memory_limit:
+            as_bytes = k8s_memory_to_bytes(self.memory_limit)
+            if as_bytes:
+                args.extend(["--memory", str(as_bytes)])
+        if self.cpu_limit:
+            cores = k8s_cpu_to_cores(self.cpu_limit)
+            if cores:
+                args.extend(["--cpus", f"{cores:g}"])
+        return args
+
+    # --- internals ---
+
+    def _run(
+        self, args: list[str], timeout: int = 300, check: bool = True
+    ) -> subprocess.CompletedProcess:
+        """Invoke the container runtime CLI."""
+        result = subprocess.run(
+            [self.runtime] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if check and result.returncode != 0:
+            raise ContainerRuntimeError(
+                f"{self.runtime} {' '.join(args[:3])} failed:\n{result.stderr.strip()}"
+            )
+        return result
+
+    def _scripts_path(self, database_type: str) -> Path:
+        """Locate the TCL scripts for a database type.
+
+        These are the same files the Helm chart packages into a ConfigMap, so
+        both backends execute identical benchmark logic.
+        """
+        base = self._scripts_dir or (Path(get_chart_path()) / "scripts")
+        path = base / database_type
+        if not path.is_dir():
+            raise ContainerRuntimeError(
+                f"No TCL scripts found for database type '{database_type}' at {path}"
+            )
+        return path
+
+    @staticmethod
+    def _normalise_phase(phase: str) -> str:
+        """Map the CLI phase onto the label the Kubernetes path records.
+
+        The CLI says "run" but Helm and the entrypoint both record "load".
+        Containers must use the same vocabulary or callers that filter by phase
+        silently find nothing.
+        """
+        return PHASE_MAP.get(phase, phase)
+
+    @classmethod
+    def _container_name(cls, phase: str, index: int, test_id: str) -> str:
+        return f"hdb-{cls._normalise_phase(phase)}-{index:02d}-{test_id}"
+
+    # --- Backend protocol ---
+
+    def preflight(self) -> list[str]:
+        """Verify the runtime responds before we try to deploy against it."""
+        problems: list[str] = []
+        try:
+            result = self._run(
+                ["version", "--format", "{{.Client.Version}}"], timeout=30, check=False
+            )
+            if result.returncode != 0:
+                # Older podman/docker may not support that format string.
+                result = self._run(["--version"], timeout=30, check=False)
+            if result.returncode != 0:
+                problems.append(
+                    f"{self.runtime} is installed but not responding: "
+                    f"{result.stderr.strip()}"
+                )
+        except Exception as e:
+            problems.append(f"Could not run {self.runtime}: {e}")
+        return problems
+
+    def deploy(
+        self,
+        targets: list[dict],
+        env_per_target: list[dict[str, str]],
+        *,
+        test_id: str,
+        phase: str,
+        benchmark: str,
+        image: str,
+        pull_policy: str = "Always",
+        dry_run: bool = False,
+    ) -> list[str]:
+        """Start one detached container per target."""
+        if pull_policy == "Always" and not dry_run:
+            self._run(["pull", image], timeout=1800, check=False)
+
+        label_phase = self._normalise_phase(phase)
+        names: list[str] = []
+        for index, (target, env) in enumerate(zip(targets, env_per_target)):
+            name = self._container_name(phase, index, test_id)
+            scripts = self._scripts_path(target["type"])
+
+            args = [
+                "run",
+                "--detach",
+                "--name",
+                name,
+                "--label",
+                f"{LABEL_MANAGED}={MANAGED_VALUE}",
+                "--label",
+                f"{LABEL_TEST_ID}={test_id}",
+                "--label",
+                f"{LABEL_PHASE}={label_phase}",
+                "--label",
+                f"{LABEL_TARGET}={target['name']}",
+                "--label",
+                f"{LABEL_TARGET_HOST}={target['host']}",
+                "--label",
+                f"{LABEL_DB_TYPE}={target['type']}",
+                "--label",
+                f"{LABEL_INDEX}={index}",
+            ]
+
+            if self.deployment_name:
+                args.extend(["--label", f"{LABEL_DEPLOYMENT}={self.deployment_name}"])
+
+            if self.network:
+                args.extend(["--network", self.network])
+
+            args.extend(self._resource_args())
+
+            # Env vars go via a file so that passwords never appear in the
+            # process list or the shell history of the calling user.
+            env_file = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".env", delete=False, encoding="utf-8"
+            )
+            try:
+                for key, value in env.items():
+                    env_file.write(f"{key}={value}\n")
+                env_file.close()
+                args.extend(["--env-file", env_file.name])
+
+                # Mount the TCL scripts where entrypoint.sh expects them. The
+                # The :z relabel is applied only where SELinux needs it; see
+                # mount_suffix().
+                mount_target = self._script_mount_target(image)
+                args.extend(["-v", f"{scripts}:{mount_target}:{mount_suffix()}"])
+                args.append(image)
+
+                if dry_run:
+                    redacted = [
+                        a if not a.startswith("/tmp/") else "<env-file>" for a in args
+                    ]
+                    print(f"{self.runtime} " + " ".join(redacted))
+                    names.append(name)
+                    continue
+
+                self._run(args, timeout=120)
+                names.append(name)
+            finally:
+                if not dry_run:
+                    Path(env_file.name).unlink(missing_ok=True)
+
+        return names
+
+    def _script_mount_target(self, image: str) -> str:
+        """Where inside the container the TCL scripts must appear.
+
+        Preference order: an explicit config override, then the image's own
+        HAMMERDB_HOME, then a probe for an installed HammerDB. Getting this
+        wrong means entrypoint.sh cannot find its scripts, so the probe is
+        worth the extra call.
+        """
+        if self.hammerdb_home:
+            return f"{self.hammerdb_home}/scripts"
+
+        result = self._run(
+            [
+                "image",
+                "inspect",
+                image,
+                "--format",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+            ],
+            timeout=60,
+            check=False,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("HAMMERDB_HOME="):
+                    home = line.split("=", 1)[1].strip()
+                    if home:
+                        return f"{home}/scripts"
+
+        # Older images predate HAMMERDB_HOME. Ask the image where HammerDB is
+        # rather than guessing a version that may not match.
+        probe = self._run(
+            [
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                image,
+                "-c",
+                "ls -d /opt/HammerDB-* 2>/dev/null | head -1",
+            ],
+            timeout=120,
+            check=False,
+        )
+        discovered = probe.stdout.strip().splitlines()
+        if probe.returncode == 0 and discovered and discovered[0].startswith("/opt/"):
+            return f"{discovered[0].strip()}/scripts"
+
+        return f"{DEFAULT_HAMMERDB_HOME}/scripts"
+
+    def list_workloads(
+        self, test_id: str, phase: str | None = None
+    ) -> list[WorkloadRef]:
+        """Find containers for a test run."""
+        filters = [
+            "--filter",
+            f"label={LABEL_MANAGED}={MANAGED_VALUE}",
+            "--filter",
+            f"label={LABEL_TEST_ID}={test_id}",
+        ]
+        if phase:
+            filters.extend(
+                ["--filter", f"label={LABEL_PHASE}={self._normalise_phase(phase)}"]
+            )
+
+        result = self._run(["ps", "--all", "--format", "json"] + filters, check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        entries = self._parse_ps_json(result.stdout)
+        workloads = [self._to_workload(e) for e in entries]
+        return sorted(workloads, key=lambda w: w.index)
+
+    @staticmethod
+    def _parse_ps_json(stdout: str) -> list[dict]:
+        """Parse `ps --format json`.
+
+        podman emits a JSON array; docker emits newline-delimited objects.
+        """
+        text = stdout.strip()
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, list) else [data]
+        except json.JSONDecodeError:
+            pass
+
+        entries = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return entries
+
+    def _to_workload(self, entry: dict) -> WorkloadRef:
+        """Normalise a runtime-specific ps entry into a WorkloadRef."""
+        labels = entry.get("Labels") or {}
+        if isinstance(labels, str):
+            labels = dict(
+                pair.split("=", 1) for pair in labels.split(",") if "=" in pair
+            )
+
+        name = entry.get("Names") or entry.get("Name") or ""
+        if isinstance(name, list):
+            name = name[0] if name else ""
+
+        try:
+            index = int(labels.get(LABEL_INDEX, 0))
+        except (TypeError, ValueError):
+            index = 0
+
+        return WorkloadRef(
+            name=name,
+            target_name=labels.get(LABEL_TARGET, "unknown"),
+            target_host=labels.get(LABEL_TARGET_HOST, "unknown"),
+            database_type=labels.get(LABEL_DB_TYPE, "unknown"),
+            index=index,
+            status=self._normalise_status(entry),
+            duration_seconds=self._duration(name),
+        )
+
+    @staticmethod
+    def _normalise_status(entry: dict) -> str:
+        """Map runtime state onto the shared status vocabulary."""
+        state = str(entry.get("State", "")).lower()
+        exit_code = entry.get("ExitCode")
+
+        if state in ("running", "up"):
+            return STATUS_RUNNING
+        if state in ("created", "paused"):
+            return STATUS_RUNNING
+        if state in ("exited", "stopped", "dead"):
+            # docker sometimes reports status as "Exited (1) 2 minutes ago"
+            if exit_code is None:
+                status_text = str(entry.get("Status", ""))
+                exit_code = 0 if "(0)" in status_text else 1
+            return STATUS_COMPLETED if int(exit_code) == 0 else STATUS_FAILED
+        return STATUS_RUNNING
+
+    def _duration(self, container_name: str) -> int | None:
+        """Wall-clock runtime of a container, in seconds."""
+        if not container_name:
+            return None
+        # Ask for RFC3339 explicitly. podman's default rendering of these
+        # fields is Go's native time format ("2026-07-24 23:32:08.69 -0600 MDT"),
+        # which is not parseable as ISO 8601.
+        result = self._run(
+            [
+                "inspect",
+                container_name,
+                "--format",
+                "{{.State.StartedAt.Format "
+                '"2006-01-02T15:04:05.999999999Z07:00"'
+                "}}|{{.State.FinishedAt.Format "
+                '"2006-01-02T15:04:05.999999999Z07:00"'
+                "}}",
+            ],
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            # docker exposes these as pre-formatted strings, so .Format fails.
+            result = self._run(
+                [
+                    "inspect",
+                    container_name,
+                    "--format",
+                    "{{.State.StartedAt}}|{{.State.FinishedAt}}",
+                ],
+                timeout=30,
+                check=False,
+            )
+        if result.returncode != 0:
+            return None
+
+        raw = result.stdout.strip()
+        if "|" not in raw:
+            return None
+        start_s, end_s = raw.split("|", 1)
+        start = _parse_ts(start_s)
+        end = _parse_ts(end_s)
+        if not start:
+            return None
+        if not end:
+            end = datetime.now(timezone.utc)
+        seconds = int((end - start).total_seconds())
+        return seconds if seconds >= 0 else None
+
+    def get_logs(self, workload_name: str, tail: int | None = None) -> str:
+        """Fetch container logs."""
+        args = ["logs"]
+        if tail is not None:
+            args.extend(["--tail", str(tail)])
+        args.append(workload_name)
+        result = self._run(args, timeout=120, check=False)
+        # HammerDB writes to both streams; callers want the combined output.
+        return (result.stdout or "") + (result.stderr or "")
+
+    def remove(self, test_id: str | None = None, everything: bool = False) -> int:
+        """Remove containers for a test run, or every managed container.
+
+        "Everything" means everything belonging to this config, not every
+        hammerdb-scale container on the host: cleaning up one validation must
+        not delete a colleague's run.
+        """
+        filters = self._scope_filters()
+        if test_id and not everything:
+            filters.extend(["--filter", f"label={LABEL_TEST_ID}={test_id}"])
+
+        result = self._run(["ps", "--all", "--quiet"] + filters, check=False)
+        ids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not ids:
+            return 0
+
+        self._run(["rm", "--force"] + ids, timeout=180, check=False)
+        return len(ids)
+
+    def wait(self, workload_names: list[str], timeout: int) -> None:
+        """Block until the given containers exit, or the timeout elapses."""
+        if not workload_names:
+            return
+        self._run(["wait"] + workload_names, timeout=timeout, check=False)
+
+    def find_test_ids(self) -> list[str]:
+        """List test IDs that have managed containers, most recent first.
+
+        Ordering matters: `results` and `report` act on the first entry, so a
+        stale build run appearing ahead of the run the user just finished sends
+        them to the wrong data. The runtime does not guarantee ps ordering, so
+        sort explicitly by container creation time.
+
+        Scoped to this config where possible. Containers created before
+        deployment-name labelling carry no such label, so an empty scoped
+        result falls back to the unscoped query rather than telling the user
+        their completed run does not exist.
+        """
+        result = self._run(
+            ["ps", "--all"] + self._scope_filters() + ["--format", "json"],
+            check=False,
+        )
+        entries = self._parse_ps_json(result.stdout) if result.returncode == 0 else []
+        if not entries and self.deployment_name:
+            result = self._run(
+                [
+                    "ps",
+                    "--all",
+                    "--filter",
+                    f"label={LABEL_MANAGED}={MANAGED_VALUE}",
+                    "--format",
+                    "json",
+                ],
+                check=False,
+            )
+            entries = (
+                self._parse_ps_json(result.stdout) if result.returncode == 0 else []
+            )
+        if not entries:
+            return []
+
+        newest: dict[str, float] = {}
+        for entry in entries:
+            labels = entry.get("Labels") or {}
+            if isinstance(labels, str):
+                labels = dict(
+                    pair.split("=", 1) for pair in labels.split(",") if "=" in pair
+                )
+            test_id = labels.get(LABEL_TEST_ID)
+            if not test_id:
+                continue
+            created = _created_sort_key(entry)
+            if created > newest.get(test_id, float("-inf")):
+                newest[test_id] = created
+
+        return sorted(newest, key=lambda t: newest[t], reverse=True)
+
+
+def _created_sort_key(entry: dict) -> float:
+    """Creation time of a ps entry as a sortable number.
+
+    podman reports `Created` as a unix timestamp, docker as an RFC3339 string.
+    Unparseable entries sort oldest so they never displace a known-good one.
+    """
+    created = entry.get("Created") or entry.get("CreatedAt")
+    if isinstance(created, (int, float)):
+        return float(created)
+    if isinstance(created, str):
+        parsed = _parse_ts(created)
+        if parsed:
+            return parsed.timestamp()
+        try:
+            return float(created)
+        except ValueError:
+            return float("-inf")
+    return float("-inf")
+
+
+def _parse_ts(value: str) -> datetime | None:
+    """Parse a container runtime timestamp.
+
+    Both runtimes emit RFC3339 with varying sub-second precision, and use a
+    zero value for containers that have not finished.
+    """
+    value = value.strip()
+    if not value or value.startswith("0001-01-01"):
+        return None
+
+    # Go's native time rendering, e.g. "2026-07-24 23:32:08.6967 -0600 MDT".
+    # Drop the trailing timezone abbreviation and keep the numeric offset,
+    # inserting the colon fromisoformat requires on Python < 3.11.
+    parts = value.split()
+    if (
+        len(parts) >= 3
+        and ":" in parts[1]
+        and (parts[2].startswith("+") or parts[2].startswith("-"))
+    ):
+        offset = parts[2]
+        if len(offset) == 5 and offset[1:].isdigit():
+            offset = f"{offset[:3]}:{offset[3:]}"
+        value = f"{parts[0]}T{parts[1]}{offset}"
+
+    text = value.replace("Z", "+00:00")
+    # Trim sub-second precision beyond microseconds, which fromisoformat rejects
+    # on older Python versions.
+    if "." in text:
+        head, _, tail = text.partition(".")
+        digits = ""
+        rest = ""
+        for i, ch in enumerate(tail):
+            if ch.isdigit():
+                digits += ch
+            else:
+                rest = tail[i:]
+                break
+        text = f"{head}.{digits[:6]}{rest}"
+
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed

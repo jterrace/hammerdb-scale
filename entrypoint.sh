@@ -14,6 +14,55 @@ log() {
 # Set TMPDIR if not already set
 export TMPDIR="${TMPDIR:-/tmp}"
 
+# Resolve the HammerDB installation directory.
+#
+# HAMMERDB_HOME is set by the Dockerfile so the version lives in exactly one
+# place. The glob fallback keeps this script working in images built before
+# that variable existed, and in any image where HammerDB was installed to a
+# differently-versioned path.
+if [ -z "$HAMMERDB_HOME" ]; then
+    for candidate in /opt/HammerDB-*; do
+        if [ -x "$candidate/hammerdbcli" ]; then
+            HAMMERDB_HOME="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "$HAMMERDB_HOME" ] || [ ! -x "$HAMMERDB_HOME/hammerdbcli" ]; then
+    log "ERROR: Could not locate a HammerDB installation."
+    log "       Set HAMMERDB_HOME, or install HammerDB under /opt/HammerDB-<version>."
+    exit 1
+fi
+export HAMMERDB_HOME
+
+# Resolve the TCL script directory independently of HAMMERDB_HOME.
+#
+# The scripts are mounted in by the orchestrator (a ConfigMap on Kubernetes, a
+# bind mount for containers), and the mount path is chosen by the chart while
+# HAMMERDB_HOME is baked into the image. Those two can disagree: a 6.0-aware
+# chart mounting into a 5.0 image lands the scripts somewhere this script would
+# never look, and the pod fails with a confusing "script not found".
+#
+# Rather than requiring exact agreement, search the candidate locations. This
+# keeps any chart version working against any image version.
+if [ -n "$HAMMERDB_SCRIPT_DIR" ]; then
+    SCRIPT_DIR="$HAMMERDB_SCRIPT_DIR"
+else
+    SCRIPT_DIR=""
+    for candidate in "$HAMMERDB_HOME/scripts" /opt/HammerDB-*/scripts /scripts; do
+        # A directory only counts if it holds mounted TCL scripts.
+        if compgen -G "$candidate/*.tcl" > /dev/null 2>&1; then
+            SCRIPT_DIR="$candidate"
+            break
+        fi
+    done
+    # Fall back to the conventional path so the error message below is sensible.
+    SCRIPT_DIR="${SCRIPT_DIR:-$HAMMERDB_HOME/scripts}"
+fi
+log "Using HammerDB at: $HAMMERDB_HOME"
+log "Using scripts from: $SCRIPT_DIR"
+
 # Ensure all required environment variables are set
 if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ] || [ -z "$HOST" ] || [ -z "$BENCHMARK" ]; then
   log "ERROR: Environment variables USERNAME, PASSWORD, HOST and BENCHMARK must be set."
@@ -50,13 +99,12 @@ case "$DATABASE_TYPE" in
         ;;
     postgres)
         log "Database: PostgreSQL"
-        log "ERROR: PostgreSQL support not yet implemented"
-        exit 1
         ;;
     oracle)
         log "Database: Oracle"
-        # Check if Oracle Instant Client is installed
-        if [ ! -d "/opt/oracle/instantclient_21_11" ]; then
+        # Check if Oracle Instant Client is installed. Match any version so a
+        # client upgrade does not require editing this script.
+        if ! compgen -G "/opt/oracle/instantclient_*" > /dev/null; then
             log ""
             log "============================================================"
             log "ERROR: Oracle Instant Client not found!"
@@ -177,25 +225,43 @@ elif [[ "$DATABASE_TYPE" == "oracle" ]]; then
         log "ERROR: Unknown BENCHMARK: '$BENCHMARK'. Supported: tprocc, tproch"
         exit 1
     fi
-# EXTENSION POINT: Add PostgreSQL script selection here
-# elif [[ "$DATABASE_TYPE" == "postgres" ]]; then
-#     if [[ "$BENCHMARK" == "tprocc" ]]; then
-#         case "$RUN_MODE" in
-#             build)
-#                 SCRIPT_NAME="build_schema_tprocc_pg.tcl"
-#                 ;;
-#             load)
-#                 SCRIPT_NAME="load_test_tprocc_pg.tcl"
-#                 ;;
-#             parse)
-#                 SCRIPT_NAME="parse_output_tprocc_pg.tcl"
-#                 ;;
-#         esac
-#     fi
-
-# EXTENSION POINT: Add Oracle script selection here
-# elif [[ "$DATABASE_TYPE" == "oracle" ]]; then
-#     ...
+elif [[ "$DATABASE_TYPE" == "postgres" ]]; then
+    if [[ "$BENCHMARK" == "tprocc" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tprocc.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tprocc.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tprocc.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    elif [[ "$BENCHMARK" == "tproch" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tproch.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tproch.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tproch.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    else
+        log "ERROR: Unknown BENCHMARK: '$BENCHMARK'. Supported: tprocc, tproch"
+        exit 1
+    fi
 
 # EXTENSION POINT: Add MySQL script selection here
 # elif [[ "$DATABASE_TYPE" == "mysql" ]]; then
@@ -207,8 +273,8 @@ else
 fi
 
 # Check if the script exists
-if [ ! -f "/opt/HammerDB-5.0/scripts/$SCRIPT_NAME" ]; then
-  log "ERROR: Script '/opt/HammerDB-5.0/scripts/$SCRIPT_NAME' not found."
+if [ ! -f "$SCRIPT_DIR/$SCRIPT_NAME" ]; then
+  log "ERROR: Script '$SCRIPT_DIR/$SCRIPT_NAME' not found."
   exit 1
 fi
 
@@ -260,7 +326,7 @@ if [[ "$RUN_MODE" == "load" ]] && [[ "${PURE_ENABLED:-false}" == "true" ]]; then
         fi
 
         # Check if Python script exists
-        if [ -f "/opt/HammerDB-5.0/scripts/collect_pure_metrics.py" ]; then
+        if [ -f "$SCRIPT_DIR/collect_pure_metrics.py" ]; then
             log "Starting Pure Storage metrics collector"
             log "  Array: ${PURE_HOST}"
             log "  Duration: ${COLLECTION_DURATION}s"
@@ -283,7 +349,7 @@ if [[ "$RUN_MODE" == "load" ]] && [[ "${PURE_ENABLED:-false}" == "true" ]]; then
                 log "Using Python interpreter: $PYTHON_CMD"
 
                 # Start collector in background with all parameters from environment
-                $PYTHON_CMD /opt/HammerDB-5.0/scripts/collect_pure_metrics.py \
+                $PYTHON_CMD $SCRIPT_DIR/collect_pure_metrics.py \
                     --host "${PURE_HOST}" \
                     --token "${PURE_API_TOKEN}" \
                     --duration "$COLLECTION_DURATION" \
@@ -297,7 +363,7 @@ if [[ "$RUN_MODE" == "load" ]] && [[ "${PURE_ENABLED:-false}" == "true" ]]; then
                 log "Pure Storage collector started with PID: $PURE_PID"
             fi
         else
-            log "WARNING: Pure Storage metrics script not found at /opt/HammerDB-5.0/scripts/collect_pure_metrics.py"
+            log "WARNING: Pure Storage metrics script not found at $SCRIPT_DIR/collect_pure_metrics.py"
         fi
     else
         log "Pure Storage monitoring enabled but this pod is NOT the designated collector"
@@ -309,7 +375,7 @@ fi
 # Run the specified HammerDB script with unbuffered output
 log "Test started at: $START_TIME"
 EXIT_CODE=0
-/opt/HammerDB-5.0/hammerdbcli auto /opt/HammerDB-5.0/scripts/$SCRIPT_NAME 2>&1 || EXIT_CODE=$?
+"$HAMMERDB_HOME/hammerdbcli" auto "$SCRIPT_DIR/$SCRIPT_NAME" 2>&1 || EXIT_CODE=$?
 
 # Auto-invoke parse phase after load tests complete successfully
 if [[ "$RUN_MODE" == "load" ]] && [ $EXIT_CODE -eq 0 ]; then
@@ -322,13 +388,13 @@ if [[ "$RUN_MODE" == "load" ]] && [ $EXIT_CODE -eq 0 ]; then
     fi
 
     if [ -n "$PARSE_SCRIPT" ]; then
-        if [ -f "/opt/HammerDB-5.0/scripts/$PARSE_SCRIPT" ]; then
+        if [ -f "$SCRIPT_DIR/$PARSE_SCRIPT" ]; then
             log "Executing parse script: $PARSE_SCRIPT"
-            /opt/HammerDB-5.0/hammerdbcli auto /opt/HammerDB-5.0/scripts/$PARSE_SCRIPT 2>&1 || {
+            "$HAMMERDB_HOME/hammerdbcli" auto "$SCRIPT_DIR/$PARSE_SCRIPT" 2>&1 || {
                 log "WARNING: Parse script failed but continuing (exit code: $?)"
             }
         else
-            log "WARNING: Parse script not found at /opt/HammerDB-5.0/scripts/$PARSE_SCRIPT"
+            log "WARNING: Parse script not found at $SCRIPT_DIR/$PARSE_SCRIPT"
         fi
     fi
 fi

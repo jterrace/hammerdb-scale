@@ -9,6 +9,48 @@ from hammerdb_scale.output import console, print_error, print_success, print_war
 from hammerdb_scale.results.storage import results_exist
 
 
+def clean_container_resources(
+    backend,
+    test_id: str | None = None,
+    everything: bool = False,
+    force: bool = False,
+    results_dir=None,
+) -> None:
+    """Remove containers created by the container backend."""
+    from pathlib import Path
+
+    if results_dir is None:
+        results_dir = Path("./results")
+
+    workloads = backend.list_workloads(test_id) if test_id else []
+    if everything:
+        console.print("\nRemoving all hammerdb-scale containers.")
+    elif not workloads:
+        console.print("No containers found to clean.")
+        return
+    else:
+        console.print(f"\nFound {len(workloads)} container(s):")
+        for w in workloads:
+            console.print(f"  {w.name} ({w.status})")
+
+    if test_id and not results_exist(test_id, results_dir) and not force:
+        print_warning(
+            f"Results for test '{test_id}' have not been aggregated.\n"
+            f"      Run 'hammerdb-scale results --id {test_id}' first,\n"
+            f"      or use --force to proceed without aggregating."
+        )
+        if not typer.confirm("\nProceed anyway?"):
+            raise typer.Abort()
+
+    if not force:
+        if not typer.confirm("\nRemove these containers?"):
+            raise typer.Abort()
+
+    removed = backend.remove(test_id=test_id, everything=everything)
+    print_success(f"Removed {removed} container(s)")
+    console.print("\nContainers cleaned. Local results preserved in ./results/")
+
+
 def clean_resources(
     namespace: str,
     test_id: str | None = None,

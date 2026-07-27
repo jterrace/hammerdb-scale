@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hammerdb-scale"
-version = "2.0.3"
-description = "CLI for orchestrating parallel HammerDB database benchmarks at scale on Kubernetes"
+version = "2.0.4"
+description = "CLI for orchestrating parallel HammerDB database benchmarks at scale"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.15.0",
+    "ruff>=0.15.0,<0.16.0",
     "mypy>=1.8.0",
 ]
 

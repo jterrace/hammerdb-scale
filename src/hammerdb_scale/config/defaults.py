@@ -70,6 +70,12 @@ def expand_targets(config: HammerDBScaleConfig) -> list[dict]:
             target["tproch"] = {
                 "databaseName": mssql.get("tproch", {}).get("database_name", "tpch")
             }
+        elif effective_type == DatabaseType.postgres:
+            postgres = _deep_merge(
+                defaults.postgres.model_dump() if defaults.postgres else {},
+                host.postgres.model_dump(exclude_none=True) if host.postgres else {},
+            )
+            target["postgres"] = postgres
 
         expanded.append(target)
 

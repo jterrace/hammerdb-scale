@@ -1,0 +1,74 @@
+# SQL Server TPC-C scale test — 8 targets
+name: mssql-scale-8
+description: "MSSQL TPROCC benchmark — 8 targets"
+default_benchmark: tprocc
+
+targets:
+  defaults:
+    type: mssql
+    username: sa
+    password: "Osmium76"
+    image:
+      repository: sillidata/hammerdb-scale
+      tag: latest
+      pull_policy: Always
+    mssql:
+      port: 1433
+      connection:
+        tcp: true
+        authentication: sql
+        odbc_driver: "ODBC Driver 18 for SQL Server"
+        encrypt_connection: true
+        trust_server_cert: true
+      tprocc:
+        database_name: tpcc
+      tproch:
+        database_name: tpch
+
+  hosts:
+    - name: sql-bench-01
+      host: "sql-bench-01.soln.local"
+    - name: sql-bench-02
+      host: "sql-bench-02.soln.local"
+    - name: sql-bench-03
+      host: "sql-bench-03.soln.local"
+    - name: sql-bench-04
+      host: "sql-bench-04.soln.local"
+    - name: sql-bench-05
+      host: "sql-bench-05.soln.local"
+    - name: sql-bench-06
+      host: "sql-bench-06.soln.local"
+
+hammerdb:
+  tprocc:
+    warehouses: 10000
+    build_virtual_users: 32
+    load_virtual_users: 200
+    driver: timed
+    rampup: 5
+    duration: 15
+    total_iterations: 10000000
+    all_warehouses: true
+    checkpoint: true
+    time_profile: false
+
+resources:
+  requests:
+    memory: "4Gi"
+    cpu: "4"
+  limits:
+    memory: "8Gi"
+    cpu: "8"
+
+kubernetes:
+  namespace: hammerdb
+  job_ttl: 86400
+
+storage_metrics:
+  enabled: true
+  pure:
+    host: "10.21.158.130"
+    api_token: "b2ef5116-a2e9-6b79-6987-aa7407038f10"
+    volume: ""
+    poll_interval: 5
+    verify_ssl: false

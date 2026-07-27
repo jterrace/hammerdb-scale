@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 class DatabaseType(str, Enum):
     oracle = "oracle"
     mssql = "mssql"
+    postgres = "postgres"
 
 
 class BenchmarkType(str, Enum):
@@ -28,6 +29,21 @@ class ImagePullPolicy(str, Enum):
     always = "Always"
     if_not_present = "IfNotPresent"
     never = "Never"
+
+
+class BackendType(str, Enum):
+    """Where benchmark workloads execute."""
+
+    kubernetes = "kubernetes"
+    container = "container"  # auto-detect podman or docker
+    podman = "podman"
+    docker = "docker"
+
+
+class ContainerRuntimeName(str, Enum):
+    auto = "auto"
+    podman = "podman"
+    docker = "docker"
 
 
 # --- Oracle Config Models ---
@@ -82,6 +98,39 @@ class MssqlConfig(BaseModel):
     connection: MssqlConnectionConfig = MssqlConnectionConfig()
 
 
+# --- PostgreSQL Config Models ---
+
+
+class PostgresTproccConfig(BaseModel):
+    database_name: str = "tpcc"
+    user: str = "tpcc"
+    password: str = "tpcc"
+    # HammerDB's recommended default for PostgreSQL TPROC-C, and generally the
+    # higher-throughput form. Must match between build and run: the driver
+    # calls procedures that only exist if the schema was built with them.
+    stored_procedures: bool = True
+    partition: bool = False
+    vacuum: bool = False
+
+
+class PostgresTprochConfig(BaseModel):
+    database_name: str = "tpch"
+    user: str = "tpch"
+    password: str = "tpch"
+    # Degree of parallelism for the query phase.
+    max_parallel_workers: int = Field(default=8, ge=1)
+
+
+class PostgresConfig(BaseModel):
+    port: int = Field(default=5432, ge=1, le=65535)
+    # PostgreSQL defaults to "prefer": TLS when the server offers it.
+    sslmode: str = "prefer"
+    # Empty means pg_default, which is the volume the data directory lives on.
+    tablespace: str = ""
+    tprocc: PostgresTproccConfig = PostgresTproccConfig()
+    tproch: PostgresTprochConfig = PostgresTprochConfig()
+
+
 # --- Image Config ---
 
 
@@ -89,6 +138,10 @@ class ImageConfig(BaseModel):
     repository: str = "sillidata/hammerdb-scale"
     tag: str = "latest"
     pull_policy: ImagePullPolicy = ImagePullPolicy.always
+    # Where HammerDB lives inside the image. Only needs setting for a custom
+    # image built with a non-default HAMMERDB_VERSION; the container backend
+    # otherwise reads HAMMERDB_HOME from the image itself.
+    hammerdb_home: Optional[str] = None
 
 
 # --- Target Models ---
@@ -103,6 +156,7 @@ class TargetHost(BaseModel):
     image: Optional[ImageConfig] = None
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
+    postgres: Optional[PostgresConfig] = None
 
 
 class TargetDefaults(BaseModel):
@@ -112,6 +166,7 @@ class TargetDefaults(BaseModel):
     image: ImageConfig = ImageConfig()
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
+    postgres: Optional[PostgresConfig] = None
 
 
 class TargetsConfig(BaseModel):
@@ -132,7 +187,12 @@ class TproccConfig(BaseModel):
     total_iterations: int = Field(default=10000000, ge=1)
     all_warehouses: bool = True
     checkpoint: bool = True
-    time_profile: bool = False
+    # On by default: this is what produces the per-transaction response time
+    # percentiles in the scorecard, and array-side latency is hard to argue
+    # from without the application's view of the same moment. Measured at
+    # under run-to-run variance on an 8-VU SQL Server run, so the data is
+    # effectively free.
+    time_profile: bool = True
 
 
 class TprochConfig(BaseModel):
@@ -164,6 +224,20 @@ class ResourcesConfig(BaseModel):
 class KubernetesConfig(BaseModel):
     namespace: str = "hammerdb"
     job_ttl: int = Field(default=86400, ge=0)
+    # Emit a restricted-compliant securityContext on the Job pods. Needed on
+    # plain Kubernetes clusters enforcing the restricted Pod Security Standard.
+    # OpenShift injects an equivalent context via its SCC either way.
+    security_context: bool = True
+    # Pass database credentials through a Secret rather than plain env values
+    # in the Job spec, where `kubectl describe job` would expose them.
+    use_secrets: bool = True
+
+
+class ContainerConfig(BaseModel):
+    """Settings for the local container backend (podman or docker)."""
+
+    runtime: ContainerRuntimeName = ContainerRuntimeName.auto
+    network: Optional[str] = None  # None uses the runtime's default network
 
 
 # --- Storage Metrics ---
@@ -194,27 +268,33 @@ class HammerDBScaleConfig(BaseModel):
     name: str
     description: str = ""
     default_benchmark: Optional[BenchmarkType] = None
+    backend: BackendType = BackendType.kubernetes
     targets: TargetsConfig
     hammerdb: HammerDBConfig = HammerDBConfig()
     resources: ResourcesConfig = ResourcesConfig()
     kubernetes: KubernetesConfig = KubernetesConfig()
+    container: ContainerConfig = ContainerConfig()
     storage_metrics: StorageMetricsConfig = StorageMetricsConfig()
 
     @model_validator(mode="after")
-    def validate_database_type_config(self) -> "HammerDBScaleConfig":
-        """Ensure the active database type has its config block present."""
+    def apply_database_type_defaults(self) -> "HammerDBScaleConfig":
+        """Fill in the database-specific block when it was not supplied.
+
+        Every field in OracleConfig and MssqlConfig has a working default, so
+        requiring the block was pure boilerplate: it forced roughly 15 lines of
+        config that only restated the defaults. Omitting it now means "use the
+        defaults", which is what lets a minimal config be a dozen lines.
+
+        Oracle is the exception worth noting: its schema passwords default to
+        empty and fall back to the target password at render time.
+        """
         defaults = self.targets.defaults
-        db_type = defaults.type
-        if db_type == DatabaseType.oracle and defaults.oracle is None:
-            raise ValueError(
-                "targets.defaults.type is 'oracle' but targets.defaults.oracle "
-                "is not configured. Add an oracle: block under targets.defaults."
-            )
-        if db_type == DatabaseType.mssql and defaults.mssql is None:
-            raise ValueError(
-                "targets.defaults.type is 'mssql' but targets.defaults.mssql "
-                "is not configured. Add an mssql: block under targets.defaults."
-            )
+        if defaults.type == DatabaseType.oracle and defaults.oracle is None:
+            defaults.oracle = OracleConfig()
+        if defaults.type == DatabaseType.mssql and defaults.mssql is None:
+            defaults.mssql = MssqlConfig()
+        if defaults.type == DatabaseType.postgres and defaults.postgres is None:
+            defaults.postgres = PostgresConfig()
         return self
 
     @model_validator(mode="after")

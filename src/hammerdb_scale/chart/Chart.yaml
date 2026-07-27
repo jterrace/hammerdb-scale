@@ -2,8 +2,8 @@ apiVersion: v2
 name: hammerdb-scale
 description: Modular Helm chart for parallel HammerDB scale testing across multiple databases (SQL Server, PostgreSQL, Oracle, MySQL)
 type: application
-version: 2.0.2
-appVersion: "5.0"
+version: 2.0.4
+appVersion: "6.0"
 keywords:
   - hammerdb
   - benchmark

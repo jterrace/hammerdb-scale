@@ -1,22 +1,63 @@
 # Oracle Extension Image
-# Extends the public hammerdb-scale image with Oracle Instant Client
+# Extends the hammerdb-scale base image with Oracle Instant Client.
 #
 # LICENSING: Oracle Instant Client is proprietary software. By building this
 # image, you download Oracle software directly from Oracle's servers and agree
 # to Oracle's license terms: https://www.oracle.com/downloads/licenses/instant-client-lic.html
+# This is why Oracle support ships as a separate image you build yourself
+# rather than being part of the base image.
 #
-# BUILD:
-#   docker build -f Dockerfile.oracle -t myregistry/hammerdb-scale-oracle:latest .
-#   docker push myregistry/hammerdb-scale-oracle:latest
+# ARCHITECTURE: x86_64 only. Oracle publishes Instant Client for linux.x64 at
+# the URLs used below; there is no ARM64 equivalent in this download path.
 #
-# The base image (sillidata/hammerdb-scale) includes HammerDB 5.0 and drivers for
-# SQL Server, PostgreSQL, and MySQL. This extension adds Oracle support.
+# BUILD (against the published base):
+#   docker build -f Dockerfile.oracle -t myregistry/hammerdb-scale-oracle:6.0 .
+#
+# BUILD (against a locally built base — required when bumping HammerDB, since
+# the published base may still be an older version):
+#   docker build -f Dockerfile.oracle \
+#     --build-arg BASE_IMAGE=hammerdb-scale:6.0 \
+#     -t hammerdb-scale-oracle:6.0 .
+#
+# Prefer hack/build-images.sh, which wires the base image through
+# correctly and verifies the result.
 
-FROM sillidata/hammerdb-scale:latest
+ARG BASE_IMAGE=sillidata/hammerdb-scale:latest
+FROM ${BASE_IMAGE}
+
+# Instant Client version, defined once. It appears in the download URLs, the
+# install directory, the ld.so config and the libclntsh soname, so hardcoding
+# it meant a client upgrade was a five-line edit with no way to verify you had
+# caught every occurrence.
+#   IC_VERSION  full version, used in filenames  (21.11.0.0.0)
+#   IC_DIR_VER  directory suffix                 (21_11)
+#   IC_URL_VER  version path segment in the URL  (2111000)
+#   IC_SONAME   libclntsh major.minor            (21.1)
+ARG IC_VERSION=21.11.0.0.0
+ARG IC_DIR_VER=21_11
+ARG IC_URL_VER=2111000
+ARG IC_SONAME=21.1
+
+# Provenance. Populated by the release script; harmless when built by hand.
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+ARG IMAGE_VERSION=dev
 
 LABEL maintainer="hammerdb-scale"
 LABEL description="HammerDB Scale - Oracle Extension"
-LABEL oracle.instantclient.version="21.11.0.0.0"
+LABEL oracle.instantclient.version="${IC_VERSION}"
+LABEL org.opencontainers.image.title="hammerdb-scale-oracle"
+LABEL org.opencontainers.image.description="HammerDB Scale runner with Oracle Instant Client"
+LABEL org.opencontainers.image.source="https://github.com/PureStorage-OpenConnect/hammerdb-scale"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
+ENV ORACLE_HOME=/opt/oracle/instantclient_${IC_DIR_VER}
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_${IC_DIR_VER}:$LD_LIBRARY_PATH
+ENV PATH=/opt/oracle/instantclient_${IC_DIR_VER}:$PATH
+ENV TNS_ADMIN=/opt/oracle/instantclient_${IC_DIR_VER}/network/admin
 
 # Install Oracle Instant Client dependencies and download from Oracle
 RUN apt-get update && \
@@ -24,40 +65,33 @@ RUN apt-get update && \
         wget \
         unzip \
         libaio1t64 && \
-    # Create symlink for libaio compatibility (Ubuntu 24.04)
-    ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 && \
-    # Download Oracle Instant Client from Oracle's servers
+    # Ubuntu 24.04 ships libaio as .so.1t64; Instant Client links against .so.1
+    ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 && \
     mkdir -p /opt/oracle && \
     cd /opt/oracle && \
-    echo "Downloading Oracle Instant Client 21.11 from Oracle..." && \
+    echo "Downloading Oracle Instant Client ${IC_VERSION} from Oracle..." && \
+    BASE_URL="https://download.oracle.com/otn_software/linux/instantclient/${IC_URL_VER}" && \
     wget --progress=dot:mega \
-        https://download.oracle.com/otn_software/linux/instantclient/2111000/instantclient-basic-linux.x64-21.11.0.0.0dbru.zip && \
+        "${BASE_URL}/instantclient-basic-linux.x64-${IC_VERSION}dbru.zip" && \
     wget --progress=dot:mega \
-        https://download.oracle.com/otn_software/linux/instantclient/2111000/instantclient-sqlplus-linux.x64-21.11.0.0.0dbru.zip && \
-    unzip -q instantclient-basic-linux.x64-21.11.0.0.0dbru.zip && \
-    unzip -q instantclient-sqlplus-linux.x64-21.11.0.0.0dbru.zip && \
-    rm *.zip && \
-    # Configure library paths
-    echo '/opt/oracle/instantclient_21_11' > /etc/ld.so.conf.d/oracle.conf && \
+        "${BASE_URL}/instantclient-sqlplus-linux.x64-${IC_VERSION}dbru.zip" && \
+    unzip -q "instantclient-basic-linux.x64-${IC_VERSION}dbru.zip" && \
+    unzip -q "instantclient-sqlplus-linux.x64-${IC_VERSION}dbru.zip" && \
+    rm ./*.zip && \
+    echo "/opt/oracle/instantclient_${IC_DIR_VER}" > /etc/ld.so.conf.d/oracle.conf && \
     ldconfig && \
-    # Cleanup
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Set Oracle environment variables
-ENV ORACLE_HOME=/opt/oracle/instantclient_21_11
-ENV LD_LIBRARY_PATH=$ORACLE_HOME:$LD_LIBRARY_PATH
-ENV PATH=$ORACLE_HOME:$PATH
-ENV TNS_ADMIN=$ORACLE_HOME/network/admin
-
-# Create lib subdirectory symlinks for HammerDB's Oratcl compatibility
-RUN mkdir -p $ORACLE_HOME/lib && \
-    cd $ORACLE_HOME && \
+# HammerDB's Oratcl looks for the client libraries under $ORACLE_HOME/lib,
+# but Instant Client unpacks them flat into $ORACLE_HOME.
+RUN mkdir -p "${ORACLE_HOME}/lib" && \
+    cd "${ORACLE_HOME}" && \
     for lib in *.so*; do \
-        [ -f "$lib" ] && ln -sf $ORACLE_HOME/$lib $ORACLE_HOME/lib/$lib; \
+        [ -f "$lib" ] && ln -sf "${ORACLE_HOME}/${lib}" "${ORACLE_HOME}/lib/${lib}"; \
     done && \
-    ln -sf $ORACLE_HOME/libclntsh.so.21.1 $ORACLE_HOME/libclntsh.so && \
-    ln -sf $ORACLE_HOME/libclntsh.so.21.1 $ORACLE_HOME/lib/libclntsh.so
+    ln -sf "${ORACLE_HOME}/libclntsh.so.${IC_SONAME}" "${ORACLE_HOME}/libclntsh.so" && \
+    ln -sf "${ORACLE_HOME}/libclntsh.so.${IC_SONAME}" "${ORACLE_HOME}/lib/libclntsh.so"
 
-# Verify Oracle client is working
+# Fail the build here rather than at benchmark time if the client is broken.
 RUN sqlplus -v && echo "Oracle Instant Client ready"

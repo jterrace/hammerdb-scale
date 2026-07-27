@@ -1,0 +1,27 @@
+{{- $hasPostgreSQL := false -}}
+{{- range .Values.targets -}}
+  {{- if eq .type "postgres" -}}
+    {{- $hasPostgreSQL = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hasPostgreSQL }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hammerdb-scale-test.fullname" . }}-scripts-postgres
+  labels:
+    {{- include "hammerdb-scale-test.labels" . | nindent 4 }}
+    hammerdb.io/database-type: postgres
+data:
+  # HammerDB TCL scripts
+  {{- range $path, $_ := .Files.Glob "scripts/postgres/*.tcl" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+
+  # Pure Storage metrics collector
+  {{- if .Values.pureStorage.enabled }}
+  collect_pure_metrics.py: |-
+{{ .Files.Get "scripts/collect_pure_metrics.py" | indent 4 }}
+  {{- end }}
+{{- end }}

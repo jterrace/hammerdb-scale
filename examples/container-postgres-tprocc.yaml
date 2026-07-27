@@ -1,0 +1,68 @@
+# ============================================================================
+# PostgreSQL TPC-C, run from a single host with podman or docker
+# ============================================================================
+#   hammerdb-scale validate -c examples/container-postgres-tprocc.yaml
+#   hammerdb-scale run --build --wait -c examples/container-postgres-tprocc.yaml
+#   hammerdb-scale report --open -c examples/container-postgres-tprocc.yaml
+#
+# The PostgreSQL hosts need to accept connections from wherever the workers
+# run: an entry in pg_hba.conf and listen_addresses set accordingly. See
+# examples/postgres-setup/provision_postgres.sh for a tuned setup.
+# ============================================================================
+
+name: postgres-storage-validation
+description: "PostgreSQL TPC-C across 4 targets"
+default_benchmark: tprocc
+backend: podman
+
+container:
+  runtime: auto
+
+targets:
+  defaults:
+    type: postgres
+    username: postgres                   # superuser, used to create the schema
+    password: "CHANGE-ME"
+    postgres:
+      port: 5432
+      sslmode: prefer                    # prefer|require|disable
+      tprocc:
+        database_name: tpcc              # created during the build phase
+        user: tpcc                       # schema owner, created during build
+        password: tpcc
+        # Stored procedures must match between build and run: the driver
+        # calls procedures that only exist if the schema was built with
+        # them. Change this before building, not after.
+        stored_procedures: true
+        partition: false
+        vacuum: false
+
+  hosts:
+    - name: pg-01
+      host: "10.0.0.21"
+    - name: pg-02
+      host: "10.0.0.22"
+    - name: pg-03
+      host: "10.0.0.23"
+    - name: pg-04
+      host: "10.0.0.24"
+
+hammerdb:
+  tprocc:
+    warehouses: 1000
+    build_virtual_users: 8
+    load_virtual_users: 8
+    driver: timed
+    rampup: 2
+    duration: 10
+    all_warehouses: true
+    checkpoint: false
+    time_profile: true
+
+resources:
+  limits:
+    memory: "2Gi"
+    cpu: "2"
+
+storage_metrics:
+  enabled: false
