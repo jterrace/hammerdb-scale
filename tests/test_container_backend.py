@@ -33,7 +33,8 @@ from hammerdb_scale.runtime.container import (
 def backend(monkeypatch):
     """A backend with runtime detection stubbed out."""
     monkeypatch.setattr(
-        "hammerdb_scale.runtime.container.detect_runtime", lambda preferred=None: "podman"
+        "hammerdb_scale.runtime.container.detect_runtime",
+        lambda preferred=None: "podman",
     )
     return ContainerBackend()
 
@@ -88,7 +89,9 @@ class TestPsJsonParsing:
 
 class TestStatusNormalisation:
     def test_running(self):
-        assert ContainerBackend._normalise_status({"State": "running"}) == STATUS_RUNNING
+        assert (
+            ContainerBackend._normalise_status({"State": "running"}) == STATUS_RUNNING
+        )
 
     def test_exited_zero_is_completed(self):
         entry = {"State": "exited", "ExitCode": 0}
@@ -115,7 +118,9 @@ class TestStatusNormalisation:
 
     def test_created_counts_as_running(self):
         """A created-but-not-started container has not failed."""
-        assert ContainerBackend._normalise_status({"State": "created"}) == STATUS_RUNNING
+        assert (
+            ContainerBackend._normalise_status({"State": "created"}) == STATUS_RUNNING
+        )
 
 
 class TestWorkloadMapping:
@@ -194,7 +199,9 @@ class TestNaming:
         "load", so the container names must map it too.
         """
         assert ContainerBackend._container_name("run", 0, "abc") == "hdb-load-00-abc"
-        assert ContainerBackend._container_name("build", 11, "abc") == "hdb-build-11-abc"
+        assert (
+            ContainerBackend._container_name("build", 11, "abc") == "hdb-build-11-abc"
+        )
 
 
 class TestCreatedSortKey:

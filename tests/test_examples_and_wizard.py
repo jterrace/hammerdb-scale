@@ -20,7 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = sorted((REPO_ROOT / "examples").glob("*.yaml"))
 
 ORACLE_BLOCK = {
-    "service": "ORCLPDB", "port": 1521, "tablespace": "TPCC",
+    "service": "ORCLPDB",
+    "port": 1521,
+    "tablespace": "TPCC",
     "temp_tablespace": "TEMP",
     "tprocc": {"user": "TPCC", "password": "p"},
     "tproch": {"user": "tpch", "password": "p"},
@@ -64,9 +66,12 @@ class TestWizardOutput:
     @pytest.mark.parametrize("db_type", ["mssql", "postgres", "oracle"])
     def test_generated_config_round_trips(self, backend, db_type):
         yaml_text = _build_config_yaml(
-            name="t", db_type_str=db_type, benchmark_str="tprocc",
+            name="t",
+            db_type_str=db_type,
+            benchmark_str="tprocc",
             hosts=[{"name": "a", "host": "10.0.0.1"}],
-            username="u", password="p",
+            username="u",
+            password="p",
             oracle_config=ORACLE_BLOCK if db_type == "oracle" else None,
             backend_str=backend,
             namespace="hammerdb" if backend == "kubernetes" else None,
@@ -78,20 +83,30 @@ class TestWizardOutput:
     def test_container_config_has_no_kubernetes_block(self):
         """A cluster block implies a cluster is needed. It is not."""
         yaml_text = _build_config_yaml(
-            name="t", db_type_str="mssql", benchmark_str="tprocc",
+            name="t",
+            db_type_str="mssql",
+            benchmark_str="tprocc",
             hosts=[{"name": "a", "host": "10.0.0.1"}],
-            username="u", password="p", oracle_config=None,
-            backend_str="podman", namespace=None,
+            username="u",
+            password="p",
+            oracle_config=None,
+            backend_str="podman",
+            namespace=None,
         )
         assert "kubernetes:" not in yaml_text
         assert "container:" in yaml_text
 
     def test_kubernetes_config_keeps_its_namespace(self):
         yaml_text = _build_config_yaml(
-            name="t", db_type_str="mssql", benchmark_str="tprocc",
+            name="t",
+            db_type_str="mssql",
+            benchmark_str="tprocc",
             hosts=[{"name": "a", "host": "10.0.0.1"}],
-            username="u", password="p", oracle_config=None,
-            backend_str="kubernetes", namespace="my-ns",
+            username="u",
+            password="p",
+            oracle_config=None,
+            backend_str="kubernetes",
+            namespace="my-ns",
         )
         assert "kubernetes:" in yaml_text
         assert "my-ns" in yaml_text
@@ -100,10 +115,15 @@ class TestWizardOutput:
     def test_postgres_does_not_emit_mssql_settings(self):
         """Regression: postgres fell into the mssql branch of the template."""
         yaml_text = _build_config_yaml(
-            name="t", db_type_str="postgres", benchmark_str="tprocc",
+            name="t",
+            db_type_str="postgres",
+            benchmark_str="tprocc",
             hosts=[{"name": "a", "host": "10.0.0.1"}],
-            username="u", password="p", oracle_config=None,
-            backend_str="podman", namespace=None,
+            username="u",
+            password="p",
+            oracle_config=None,
+            backend_str="podman",
+            namespace=None,
         )
         assert "postgres:" in yaml_text
         assert "odbc_driver" not in yaml_text

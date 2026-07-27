@@ -363,7 +363,9 @@ def _aggregate_timings(targets: list[dict]) -> list[dict]:
                     "name": name,
                     "calls": 0,
                     "max_ms": 0.0,
-                    "_weighted": {k: 0.0 for k in ("avg_ms", "p50_ms", "p95_ms", "p99_ms")},
+                    "_weighted": {
+                        k: 0.0 for k in ("avg_ms", "p50_ms", "p95_ms", "p99_ms")
+                    },
                 },
             )
             entry["calls"] += calls
@@ -394,13 +396,13 @@ def _latency_section_html(targets: list[dict]) -> str:
 
     body = "\n".join(
         f"""  <tr>
-    <td class="txn-name">{r['name']}</td>
-    <td class="num">{_fmt_number(r['calls'])}</td>
-    <td class="num">{r['avg_ms']:.2f}</td>
-    <td class="num">{r['p50_ms']:.2f}</td>
-    <td class="num">{r['p95_ms']:.2f}</td>
-    <td class="num">{r['p99_ms']:.2f}</td>
-    <td class="num worst">{r['max_ms']:,.2f}</td>
+    <td class="txn-name">{r["name"]}</td>
+    <td class="num">{_fmt_number(r["calls"])}</td>
+    <td class="num">{r["avg_ms"]:.2f}</td>
+    <td class="num">{r["p50_ms"]:.2f}</td>
+    <td class="num">{r["p95_ms"]:.2f}</td>
+    <td class="num">{r["p99_ms"]:.2f}</td>
+    <td class="num worst">{r["max_ms"]:,.2f}</td>
   </tr>"""
         for r in rows
     )

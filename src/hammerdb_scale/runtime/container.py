@@ -81,9 +81,7 @@ def k8s_memory_to_bytes(value: str) -> int | None:
     text = str(value).strip()
     if not text:
         return None
-    for suffix, factor in sorted(
-        _MEMORY_SUFFIXES.items(), key=lambda kv: -len(kv[0])
-    ):
+    for suffix, factor in sorted(_MEMORY_SUFFIXES.items(), key=lambda kv: -len(kv[0])):
         if text.endswith(suffix):
             try:
                 return int(float(text[: -len(suffix)]) * factor)
@@ -255,8 +253,9 @@ class ContainerBackend:
         """Verify the runtime responds before we try to deploy against it."""
         problems: list[str] = []
         try:
-            result = self._run(["version", "--format", "{{.Client.Version}}"],
-                               timeout=30, check=False)
+            result = self._run(
+                ["version", "--format", "{{.Client.Version}}"], timeout=30, check=False
+            )
             if result.returncode != 0:
                 # Older podman/docker may not support that format string.
                 result = self._run(["--version"], timeout=30, check=False)
@@ -296,19 +295,24 @@ class ContainerBackend:
                 "--detach",
                 "--name",
                 name,
-                "--label", f"{LABEL_MANAGED}={MANAGED_VALUE}",
-                "--label", f"{LABEL_TEST_ID}={test_id}",
-                "--label", f"{LABEL_PHASE}={label_phase}",
-                "--label", f"{LABEL_TARGET}={target['name']}",
-                "--label", f"{LABEL_TARGET_HOST}={target['host']}",
-                "--label", f"{LABEL_DB_TYPE}={target['type']}",
-                "--label", f"{LABEL_INDEX}={index}",
+                "--label",
+                f"{LABEL_MANAGED}={MANAGED_VALUE}",
+                "--label",
+                f"{LABEL_TEST_ID}={test_id}",
+                "--label",
+                f"{LABEL_PHASE}={label_phase}",
+                "--label",
+                f"{LABEL_TARGET}={target['name']}",
+                "--label",
+                f"{LABEL_TARGET_HOST}={target['host']}",
+                "--label",
+                f"{LABEL_DB_TYPE}={target['type']}",
+                "--label",
+                f"{LABEL_INDEX}={index}",
             ]
 
             if self.deployment_name:
-                args.extend(
-                    ["--label", f"{LABEL_DEPLOYMENT}={self.deployment_name}"]
-                )
+                args.extend(["--label", f"{LABEL_DEPLOYMENT}={self.deployment_name}"])
 
             if self.network:
                 args.extend(["--network", self.network])
@@ -404,17 +408,17 @@ class ContainerBackend:
     ) -> list[WorkloadRef]:
         """Find containers for a test run."""
         filters = [
-            "--filter", f"label={LABEL_MANAGED}={MANAGED_VALUE}",
-            "--filter", f"label={LABEL_TEST_ID}={test_id}",
+            "--filter",
+            f"label={LABEL_MANAGED}={MANAGED_VALUE}",
+            "--filter",
+            f"label={LABEL_TEST_ID}={test_id}",
         ]
         if phase:
             filters.extend(
                 ["--filter", f"label={LABEL_PHASE}={self._normalise_phase(phase)}"]
             )
 
-        result = self._run(
-            ["ps", "--all", "--format", "json"] + filters, check=False
-        )
+        result = self._run(["ps", "--all", "--format", "json"] + filters, check=False)
         if result.returncode != 0 or not result.stdout.strip():
             return []
 
@@ -561,9 +565,7 @@ class ContainerBackend:
         if test_id and not everything:
             filters.extend(["--filter", f"label={LABEL_TEST_ID}={test_id}"])
 
-        result = self._run(
-            ["ps", "--all", "--quiet"] + filters, check=False
-        )
+        result = self._run(["ps", "--all", "--quiet"] + filters, check=False)
         ids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         if not ids:
             return 0
@@ -594,9 +596,7 @@ class ContainerBackend:
             ["ps", "--all"] + self._scope_filters() + ["--format", "json"],
             check=False,
         )
-        entries = (
-            self._parse_ps_json(result.stdout) if result.returncode == 0 else []
-        )
+        entries = self._parse_ps_json(result.stdout) if result.returncode == 0 else []
         if not entries and self.deployment_name:
             result = self._run(
                 [
@@ -663,12 +663,18 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
     # Go's native time rendering, e.g. "2026-07-24 23:32:08.6967 -0600 MDT".
-    # Drop the trailing timezone abbreviation and keep the numeric offset.
+    # Drop the trailing timezone abbreviation and keep the numeric offset,
+    # inserting the colon fromisoformat requires on Python < 3.11.
     parts = value.split()
-    if len(parts) >= 3 and ":" in parts[1] and (
-        parts[2].startswith("+") or parts[2].startswith("-")
+    if (
+        len(parts) >= 3
+        and ":" in parts[1]
+        and (parts[2].startswith("+") or parts[2].startswith("-"))
     ):
-        value = f"{parts[0]}T{parts[1]}{parts[2]}"
+        offset = parts[2]
+        if len(offset) == 5 and offset[1:].isdigit():
+            offset = f"{offset[:3]}:{offset[3:]}"
+        value = f"{parts[0]}T{parts[1]}{offset}"
 
     text = value.replace("Z", "+00:00")
     # Trim sub-second precision beyond microseconds, which fromisoformat rejects

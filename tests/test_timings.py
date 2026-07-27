@@ -57,7 +57,9 @@ class TestParsing:
         assert timings[0].name == "PAYMENT"  # 174104 > 173647
 
     def test_numeric_conversion(self):
-        neword = next(t for t in parse_transaction_timings(PROFILED) if t.name == "NEWORD")
+        neword = next(
+            t for t in parse_transaction_timings(PROFILED) if t.name == "NEWORD"
+        )
         assert neword.calls == 173647
         assert neword.p99_ms == 11.522
         assert neword.max_ms == 133.943
@@ -78,27 +80,37 @@ class TestAggregation:
         return {
             "tprocc": {
                 "timings": [
-                    {"name": "NEWORD", "calls": calls, "avg_ms": 5.0, "p50_ms": 4.0,
-                     "p95_ms": p99 - 1, "p99_ms": p99, "max_ms": max_ms}
+                    {
+                        "name": "NEWORD",
+                        "calls": calls,
+                        "avg_ms": 5.0,
+                        "p50_ms": 4.0,
+                        "p95_ms": p99 - 1,
+                        "p99_ms": p99,
+                        "max_ms": max_ms,
+                    }
                 ]
             }
         }
 
     def test_percentiles_are_call_weighted(self):
-        rows = _aggregate_timings([self._target(100, 10.0, 50.0),
-                                   self._target(900, 20.0, 60.0)])
+        rows = _aggregate_timings(
+            [self._target(100, 10.0, 50.0), self._target(900, 20.0, 60.0)]
+        )
         # 900 calls at p99=20 must dominate 100 calls at p99=10.
         assert rows[0]["p99_ms"] == 19.0
 
     def test_max_is_worst_seen_not_averaged(self):
         """A single stall on one target is the finding, so it must survive."""
-        rows = _aggregate_timings([self._target(100, 10.0, 50.0),
-                                   self._target(100, 10.0, 12638.98)])
+        rows = _aggregate_timings(
+            [self._target(100, 10.0, 50.0), self._target(100, 10.0, 12638.98)]
+        )
         assert rows[0]["max_ms"] == 12638.98
 
     def test_calls_sum_across_targets(self):
-        rows = _aggregate_timings([self._target(100, 10.0, 1.0),
-                                   self._target(250, 10.0, 1.0)])
+        rows = _aggregate_timings(
+            [self._target(100, 10.0, 1.0), self._target(250, 10.0, 1.0)]
+        )
         assert rows[0]["calls"] == 350
 
     def test_no_timings_yields_no_rows(self):
@@ -112,18 +124,39 @@ class TestReportDegradation:
     """The section must vanish when there is no data, never render empty."""
 
     def _summary(self, timings=None):
-        target = {"name": "sql-01", "host": "10.0.0.1", "status": "completed",
-                  "duration_seconds": 245, "tprocc": {"tpm": 98575, "nopm": 42457}}
+        target = {
+            "name": "sql-01",
+            "host": "10.0.0.1",
+            "status": "completed",
+            "duration_seconds": 245,
+            "tprocc": {"tpm": 98575, "nopm": 42457},
+        }
         if timings:
             target["tprocc"]["timings"] = timings
-        return {"test_id": "t1", "benchmark": "tprocc",
-                "config": {"database_type": "mssql", "target_count": 1},
-                "targets": [target],
-                "aggregate": {"total_tpm": 98575, "total_nopm": 42457,
-                              "targets_completed": 1, "avg_tpm": 98575}}
+        return {
+            "test_id": "t1",
+            "benchmark": "tprocc",
+            "config": {"database_type": "mssql", "target_count": 1},
+            "targets": [target],
+            "aggregate": {
+                "total_tpm": 98575,
+                "total_nopm": 42457,
+                "targets_completed": 1,
+                "avg_tpm": 98575,
+            },
+        }
 
-    ROW = [{"name": "NEWORD", "calls": 1000, "avg_ms": 7.0, "p50_ms": 6.9,
-            "p95_ms": 10.2, "p99_ms": 11.5, "max_ms": 133.9}]
+    ROW = [
+        {
+            "name": "NEWORD",
+            "calls": 1000,
+            "avg_ms": 7.0,
+            "p50_ms": 6.9,
+            "p95_ms": 10.2,
+            "p99_ms": 11.5,
+            "max_ms": 133.9,
+        }
+    ]
 
     def test_section_omitted_without_timings(self):
         assert _latency_section_html([{"tprocc": {"tpm": 1}}]) == ""
@@ -145,9 +178,20 @@ class TestReportDegradation:
         assert "Storage Performance" not in html
 
     def test_report_renders_with_both(self):
-        pure = {"raw_metrics": [{"timestamp": "t", "read_latency_us": 300,
-                "write_latency_us": 400, "read_iops": 10, "write_iops": 5,
-                "read_bandwidth_mbps": 1, "write_bandwidth_mbps": 1}], "summary": {}}
+        pure = {
+            "raw_metrics": [
+                {
+                    "timestamp": "t",
+                    "read_latency_us": 300,
+                    "write_latency_us": 400,
+                    "read_iops": 10,
+                    "write_iops": 5,
+                    "read_bandwidth_mbps": 1,
+                    "write_bandwidth_mbps": 1,
+                }
+            ],
+            "summary": {},
+        }
         html = generate_scorecard(self._summary(self.ROW), pure_metrics=pure)
         assert "Transaction Response Times" in html
         assert "Storage Performance" in html

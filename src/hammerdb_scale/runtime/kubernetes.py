@@ -74,9 +74,7 @@ class KubernetesBackend:
         helm_install(release, get_chart_path(), self.namespace, values, dry_run=dry_run)
 
         helm_phase = "load" if phase == "run" else phase
-        return [
-            f"hdb-{helm_phase}-{i:02d}-{run_hash}" for i in range(len(targets))
-        ]
+        return [f"hdb-{helm_phase}-{i:02d}-{run_hash}" for i in range(len(targets))]
 
     def list_workloads(
         self, test_id: str, phase: str | None = None

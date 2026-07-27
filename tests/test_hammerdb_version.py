@@ -90,7 +90,9 @@ class TestNoHardcodedPaths:
         confusing "script not found" at runtime, so the entrypoint searches.
         """
         text = (REPO_ROOT / "entrypoint.sh").read_text()
-        assert 'for candidate in "$HAMMERDB_HOME/scripts" /opt/HammerDB-*/scripts' in text
+        assert (
+            'for candidate in "$HAMMERDB_HOME/scripts" /opt/HammerDB-*/scripts' in text
+        )
         assert "HAMMERDB_SCRIPT_DIR" in text
 
     def test_oracle_client_check_is_version_agnostic(self):
@@ -120,7 +122,9 @@ class TestChartIsNotDuplicated:
             f"{entry} should be a symlink into src/hammerdb_scale/chart/, "
             f"not a second copy that can drift"
         )
-        assert path.resolve() == (REPO_ROOT / "src/hammerdb_scale/chart" / entry).resolve()
+        assert (
+            path.resolve() == (REPO_ROOT / "src/hammerdb_scale/chart" / entry).resolve()
+        )
 
     def test_both_paths_reach_the_same_template(self):
         root = (REPO_ROOT / CHART_TEMPLATE).read_text()

@@ -27,8 +27,12 @@ def _config(db_type: str, extra: dict | None = None):
     raw = {
         "name": "t",
         "targets": {
-            "defaults": {"type": db_type, "username": "u", "password": "p",
-                         **(extra or {})},
+            "defaults": {
+                "type": db_type,
+                "username": "u",
+                "password": "p",
+                **(extra or {}),
+            },
             "hosts": [{"name": "a", "host": "10.0.0.1"}],
         },
     }
@@ -117,10 +121,12 @@ class TestDeploymentScoping:
 
         def fake_run(args, **kwargs):
             seen["args"] = args
+
             class R:
                 returncode = 0
                 stdout = ""
                 stderr = ""
+
             return R()
 
         monkeypatch.setattr(backend, "_run", fake_run)

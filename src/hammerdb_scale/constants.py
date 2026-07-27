@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+
 def _package_version() -> str:
     """Resolve the CLI version, with pyproject.toml as the source of truth.
 

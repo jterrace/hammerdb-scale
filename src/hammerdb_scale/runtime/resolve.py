@@ -113,9 +113,7 @@ def wait_for_completion(
         failed = sum(1 for w in workloads if w.status == STATUS_FAILED)
         total = len(workloads)
 
-        console.print(
-            f"  [{completed}/{total}] completed, {failed} failed", end="\r"
-        )
+        console.print(f"  [{completed}/{total}] completed, {failed} failed", end="\r")
 
         if completed + failed >= total:
             console.print()
