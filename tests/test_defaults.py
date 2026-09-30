@@ -5,6 +5,7 @@ from hammerdb_scale.config.schema import (
     DatabaseType,
     HammerDBScaleConfig,
     MssqlConfig,
+    MysqlConfig,
     OracleConfig,
     TargetDefaults,
     TargetHost,
@@ -215,6 +216,27 @@ class TestExpandTargets:
         assert targets[0]["password"] == "pass"
         assert targets[1]["username"] == "admin"
         assert targets[1]["password"] == "secret"
+
+    def test_mysql_targets_inherit_defaults(self):
+        config = HammerDBScaleConfig(
+            name="test",
+            targets=TargetsConfig(
+                defaults=TargetDefaults(
+                    type=DatabaseType.mysql,
+                    username="root",
+                    password="pass",
+                    mysql=MysqlConfig(port=3306),
+                ),
+                hosts=[
+                    TargetHost(name="my-01", host="10.0.0.1"),
+                ],
+            ),
+        )
+        targets = expand_targets(config)
+        assert len(targets) == 1
+        assert targets[0]["type"] == "mysql"
+        assert targets[0]["mysql"]["port"] == 3306
+        assert targets[0]["mysql"]["tprocc"]["database_name"] == "tpcc"
 
     def test_mssql_per_host_connection_override(self):
         """Per-host override of mssql.connection settings works via deep merge."""

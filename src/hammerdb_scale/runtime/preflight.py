@@ -33,7 +33,7 @@ print("PROBE_RESULT:" + json.dumps(results))
 # Fallback listening port per database type, used only when the config does
 # not carry one. Probing the wrong port reports a healthy fleet as unreachable,
 # which reads as "the tool is broken" rather than "the check is wrong".
-_DEFAULT_PORTS = {"oracle": 1521, "mssql": 1433, "postgres": 5432}
+_DEFAULT_PORTS = {"oracle": 1521, "mssql": 1433, "postgres": 5432, "mysql": 3306}
 
 
 def _target_endpoints(config) -> list[tuple[str, str, int]]:

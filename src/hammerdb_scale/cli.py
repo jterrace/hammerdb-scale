@@ -210,6 +210,18 @@ def _build_config_yaml(
         user: tpch
         password: tpch
         max_parallel_workers: 8            # parallel workers for analytic queries"""
+    elif db_type_str == "mysql":
+        db_defaults = """    mysql:
+      port: 3306
+      tprocc:
+        database_name: tpcc                # database created during build phase
+        user: tpcc                         # schema owner (created during build)
+        password: tpcc
+        stored_procedures: true            # build and drive via stored procedures
+      tproch:
+        database_name: tpch                # database created during build phase
+        user: tpch
+        password: tpch"""
     else:
         db_defaults = """    mssql:
       port: 1433
@@ -399,10 +411,10 @@ def init(
         name = typer.prompt("Deployment name")
 
         # Database type
-        db_type_str = typer.prompt("Database type (oracle/mssql)")
-        while db_type_str not in ("oracle", "mssql"):
-            console.print("[red]Must be 'oracle' or 'mssql'[/red]")
-            db_type_str = typer.prompt("Database type (oracle/mssql)")
+        db_type_str = typer.prompt("Database type (oracle/mssql/postgres/mysql)")
+        while db_type_str not in ("oracle", "mssql", "postgres", "mysql"):
+            console.print("[red]Must be 'oracle', 'mssql', 'postgres', or 'mysql'[/red]")
+            db_type_str = typer.prompt("Database type (oracle/mssql/postgres/mysql)")
 
         # Benchmark
         benchmark_str = typer.prompt("Benchmark (tprocc/tproch)")
@@ -420,7 +432,7 @@ def init(
             hosts.append({"name": t_name, "host": t_host})
 
         # Credentials
-        default_user = "system" if db_type_str == "oracle" else "sa"
+        default_user = {"oracle": "system", "mysql": "root"}.get(db_type_str, "sa")
         username = typer.prompt("\nDatabase username", default=default_user)
         password = typer.prompt("Database password", hide_input=True)
 
@@ -812,6 +824,33 @@ def _check_connectivity(config: HammerDBScaleConfig) -> int:
                     name,
                     False,
                     "psycopg2 not installed. Install with: pip install psycopg2-binary",
+                )
+            except Exception as e:
+                return (name, False, f"{host}:{port}  {e}")
+
+        elif db_type == "mysql":
+            my_cfg = target.get("mysql", {})
+            port = my_cfg.get("port", 3306)
+            try:
+                import pymysql
+
+                conn = pymysql.connect(
+                    host=host,
+                    port=port,
+                    user=username,
+                    password=password,
+                    connect_timeout=10,
+                )
+                with conn.cursor() as cur:
+                    cur.execute("select version()")
+                    server = cur.fetchone()[0]
+                conn.close()
+                return (name, True, f"{host}:{port}  Connected (MySQL {server})")
+            except ImportError:
+                return (
+                    name,
+                    False,
+                    "pymysql not installed. Install with: pip install pymysql",
                 )
             except Exception as e:
                 return (name, False, f"{host}:{port}  {e}")

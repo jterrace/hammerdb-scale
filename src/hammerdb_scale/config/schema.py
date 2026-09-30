@@ -13,6 +13,7 @@ class DatabaseType(str, Enum):
     oracle = "oracle"
     mssql = "mssql"
     postgres = "postgres"
+    mysql = "mysql"
 
 
 class BenchmarkType(str, Enum):
@@ -131,6 +132,30 @@ class PostgresConfig(BaseModel):
     tproch: PostgresTprochConfig = PostgresTprochConfig()
 
 
+# --- MySQL Config Models ---
+
+
+class MysqlTproccConfig(BaseModel):
+    database_name: str = "tpcc"
+    user: str = "tpcc"
+    password: str = "tpcc"
+    stored_procedures: bool = True
+    partition: bool = False
+
+
+class MysqlTprochConfig(BaseModel):
+    database_name: str = "tpch"
+    user: str = "tpch"
+    password: str = "tpch"
+
+
+class MysqlConfig(BaseModel):
+    port: int = Field(default=3306, ge=1, le=65535)
+    socket: str = ""
+    tprocc: MysqlTproccConfig = MysqlTproccConfig()
+    tproch: MysqlTprochConfig = MysqlTprochConfig()
+
+
 # --- Image Config ---
 
 
@@ -157,6 +182,7 @@ class TargetHost(BaseModel):
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
     postgres: Optional[PostgresConfig] = None
+    mysql: Optional[MysqlConfig] = None
 
 
 class TargetDefaults(BaseModel):
@@ -167,6 +193,7 @@ class TargetDefaults(BaseModel):
     oracle: Optional[OracleConfig] = None
     mssql: Optional[MssqlConfig] = None
     postgres: Optional[PostgresConfig] = None
+    mysql: Optional[MysqlConfig] = None
 
 
 class TargetsConfig(BaseModel):
@@ -295,6 +322,8 @@ class HammerDBScaleConfig(BaseModel):
             defaults.mssql = MssqlConfig()
         if defaults.type == DatabaseType.postgres and defaults.postgres is None:
             defaults.postgres = PostgresConfig()
+        if defaults.type == DatabaseType.mysql and defaults.mysql is None:
+            defaults.mysql = MysqlConfig()
         return self
 
     @model_validator(mode="after")

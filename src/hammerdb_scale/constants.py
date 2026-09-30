@@ -113,6 +113,7 @@ DEFAULT_IMAGES = {
     "mssql": "sillidata/hammerdb-scale",
     # The base image already carries libpq, so PostgreSQL needs no extension.
     "postgres": "sillidata/hammerdb-scale",
+    "mysql": "sillidata/hammerdb-scale",
 }
 
 

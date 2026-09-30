@@ -86,6 +86,7 @@ class TestDriverMapping:
         assert get_db_driver("mssql") == "mssqls"
         assert get_db_driver("oracle") == "oracle"
         assert get_db_driver("postgres") == "pg"
+        assert get_db_driver("mysql") == "mysql"
 
     def test_unknown_driver_raises(self):
         with pytest.raises(ValueError, match="Unsupported database type"):
@@ -272,3 +273,57 @@ class TestPostgresEnv:
         assert env["TPROCH_USER"] == "tpch"
         assert env["TPROCH_DATABASE_NAME"] == "tpch"
         assert "PG_STOREDPROCS" not in env
+
+
+def _mysql_config(**overrides) -> HammerDBScaleConfig:
+    from hammerdb_scale.config.schema import MysqlConfig, MysqlTproccConfig
+
+    base = dict(
+        name="my",
+        targets=TargetsConfig(
+            defaults=TargetDefaults(
+                type="mysql",
+                username="root",
+                password="secret",
+                mysql=MysqlConfig(
+                    port=3306,
+                    tprocc=MysqlTproccConfig(
+                        database_name="tpcc", user="tpcc", password="tpccpw"
+                    ),
+                ),
+            ),
+            hosts=[TargetHost(name="my-01", host="10.0.0.4")],
+        ),
+    )
+    base.update(overrides)
+    return HammerDBScaleConfig(**base)
+
+
+class TestMysqlEnv:
+    def test_connection_vars(self):
+        env = _env_for(_mysql_config())
+        assert env["HOST"] == "10.0.0.4"
+        assert env["MYSQL_PORT"] == "3306"
+        assert env["DATABASE_TYPE"] == "mysql"
+        assert env["TPROCC_DRIVER"] == "mysql"
+
+    def test_schema_credentials(self):
+        env = _env_for(_mysql_config())
+        assert env["TPROCC_USER"] == "tpcc"
+        assert env["TPROCC_PASSWORD"] == "tpccpw"
+        assert env["TPROCC_DATABASE_NAME"] == "tpcc"
+
+    def test_stored_procedures_default_on(self):
+        assert _env_for(_mysql_config())["MYSQL_STOREDPROCS"] == "true"
+
+    def test_no_other_engine_vars_leak_in(self):
+        env = _env_for(_mysql_config())
+        assert "ORACLE_SERVICE" not in env
+        assert "MSSQLS_PORT" not in env
+        assert "PG_PORT" not in env
+
+    def test_tproch_uses_tproch_credentials(self):
+        env = _env_for(_mysql_config(), benchmark="tproch")
+        assert env["TPROCH_USER"] == "tpch"
+        assert env["TPROCH_DATABASE_NAME"] == "tpch"
+        assert "MYSQL_STOREDPROCS" not in env

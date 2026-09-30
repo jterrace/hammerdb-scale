@@ -69,7 +69,8 @@ def _build_summary_table(values: dict) -> Table:
     table.add_column("Setting", style="cyan", min_width=22)
     table.add_column("Value")
 
-    db_label = "Oracle" if values["db_type_str"] == "oracle" else "SQL Server"
+    db_labels = {"oracle": "Oracle", "mssql": "SQL Server", "postgres": "PostgreSQL", "mysql": "MySQL"}
+    db_label = db_labels.get(values["db_type_str"], values["db_type_str"])
     bench_label = (
         "TPC-C (OLTP)" if values["benchmark_str"] == "tprocc" else "TPC-H (OLAP)"
     )
@@ -191,6 +192,7 @@ def run_wizard() -> dict | None:
                 ("mssql", "Microsoft SQL Server"),
                 ("postgres", "PostgreSQL"),
                 ("oracle", "Oracle  (needs a locally built image)"),
+                ("mysql", "MySQL / MariaDB"),
             ],
         )
 
@@ -235,7 +237,7 @@ def run_wizard() -> dict | None:
         )
 
         console.print()
-        default_user = "system" if db_type_str == "oracle" else "sa"
+        default_user = {"oracle": "system", "mysql": "root"}.get(db_type_str, "sa")
         username = Prompt.ask("Database username", default=default_user)
         password = _prompt_required("Database password", password=True)
 

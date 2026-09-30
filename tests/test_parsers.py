@@ -8,6 +8,7 @@ import pytest
 
 from hammerdb_scale.results.parsers import (
     MssqlParser,
+    MysqlParser,
     OracleParser,
     TproccResult,
     TprochResult,
@@ -191,6 +192,53 @@ class TestErrorDetection:
             assert parser.detect_error("Vuser 1:FINISHED SUCCESS\n") is None
 
 
+class TestMysqlTprocc:
+    parser = MysqlParser()
+
+    def test_parses_system_achieved_pattern(self):
+        log = _load("mysql_tprocc_log.txt")
+        result = self.parser.parse_tprocc(log)
+        assert result is not None
+        assert result.tpm == 185432
+        assert result.nopm == 82100
+
+    def test_returns_none_on_empty(self):
+        assert self.parser.parse_tprocc("") is None
+
+    def test_fallback_to_generic_pattern(self):
+        log = "55000 MySQL TPM\n22000 MySQL NOPM"
+        result = self.parser.parse_tprocc(log)
+        assert result is not None
+        assert result.tpm == 55000
+        assert result.nopm == 22000
+
+    def test_without_mysql_prefix(self):
+        log = "33000 TPM\n14000 NOPM"
+        result = self.parser.parse_tprocc(log)
+        assert result is not None
+        assert result.tpm == 33000
+        assert result.nopm == 14000
+
+
+class TestMysqlTproch:
+    parser = MysqlParser()
+
+    def test_parses_qphh(self):
+        log = _load("mysql_tproch_log.txt")
+        result = self.parser.parse_tproch(log)
+        assert result is not None
+        assert result.qphh == pytest.approx(1245.67)
+
+    def test_parses_queries(self):
+        log = _load("mysql_tproch_log.txt")
+        result = self.parser.parse_tproch(log)
+        assert result is not None
+        assert len(result.queries) == 22
+
+    def test_returns_none_on_empty(self):
+        assert self.parser.parse_tproch("") is None
+
+
 class TestGetParser:
     def test_oracle_returns_oracle_parser(self):
         assert isinstance(get_parser("oracle"), OracleParser)
@@ -203,6 +251,9 @@ class TestGetParser:
 
         assert isinstance(get_parser("postgres"), PostgresParser)
 
+    def test_mysql_returns_mysql_parser(self):
+        assert isinstance(get_parser("mysql"), MysqlParser)
+
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="No parser"):
-            get_parser("mysql")
+            get_parser("cassandra")

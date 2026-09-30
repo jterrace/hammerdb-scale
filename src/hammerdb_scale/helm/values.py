@@ -163,6 +163,18 @@ def _build_databases_section(config: HammerDBScaleConfig) -> dict:
             "tproch": {"user": "tpch", "password": "", "degreeOfParallel": 8},
         }
 
+    mysql = config.targets.defaults.mysql
+    if mysql:
+        section["mysql"] = {
+            "driver": "mysql",
+            "port": mysql.port,
+        }
+    else:
+        section["mysql"] = {
+            "driver": "mysql",
+            "port": 3306,
+        }
+
     return section
 
 

@@ -10,6 +10,7 @@ from hammerdb_scale.config.schema import (
     ImageConfig,
     ImagePullPolicy,
     MssqlTprochConfig,
+    MysqlConfig,
     OracleConfig,
 )
 
@@ -230,6 +231,21 @@ class TestDatabaseTypeValidation:
     def test_maxdop_default_is_2(self):
         cfg = MssqlTprochConfig()
         assert cfg.maxdop == 2
+
+    def test_mysql_block_is_filled_in_when_omitted(self):
+        data = _minimal_config()
+        data["targets"]["defaults"]["type"] = "mysql"
+        del data["targets"]["defaults"]["oracle"]
+        config = HammerDBScaleConfig(**data)
+        assert config.targets.defaults.mysql is not None
+        assert config.targets.defaults.mysql.port == 3306
+
+    def test_mysql_defaults(self):
+        cfg = MysqlConfig()
+        assert cfg.port == 3306
+        assert cfg.tprocc.database_name == "tpcc"
+        assert cfg.tprocc.stored_procedures is True
+        assert cfg.tproch.database_name == "tpch"
 
     def test_hammerdb_mssql_not_on_model(self):
         """HammerDBConfig no longer has an mssql attribute."""

@@ -49,7 +49,7 @@ class TestPreflightPorts:
     """Probing the wrong port reports a healthy fleet as unreachable."""
 
     @pytest.mark.parametrize(
-        "db_type,expected", [("oracle", 1521), ("mssql", 1433), ("postgres", 5432)]
+        "db_type,expected", [("oracle", 1521), ("mssql", 1433), ("postgres", 5432), ("mysql", 3306)]
     )
     def test_default_port_per_database(self, db_type, expected):
         assert _target_endpoints(_config(db_type))[0][2] == expected

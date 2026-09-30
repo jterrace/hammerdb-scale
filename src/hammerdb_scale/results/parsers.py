@@ -288,6 +288,54 @@ class PostgresParser(OutputParser):
         return _detect_generic_error(log_text)
 
 
+class MysqlParser(OutputParser):
+    TPM_PATTERN = re.compile(r"(\d+)\s+(?:MySQL\s+)?TPM")
+    NOPM_PATTERN = re.compile(r"(\d+)\s+(?:MySQL\s+)?NOPM")
+    SYSTEM_TPM_PATTERN = re.compile(
+        r"System achieved\s+(\d+)\s+(?:MySQL\s+)?NOPM\s+from\s+"
+        r"(\d+)\s+(?:MySQL\s+)?TPM"
+    )
+
+    QPHH_PATTERN = re.compile(r"QphH(?:@\d+)?[:\s]+([0-9]+\.?[0-9]*)")
+    QUERY_PATTERN = re.compile(r"Query\s+(\d+)[:\s]+([0-9]+\.?[0-9]*)\s+seconds?")
+
+    def parse_tprocc(self, log_text: str) -> TproccResult | None:
+        sys_matches = self.SYSTEM_TPM_PATTERN.findall(log_text)
+        if sys_matches:
+            nopm, tpm = sys_matches[-1]
+            return TproccResult(tpm=int(tpm), nopm=int(nopm))
+
+        tpm_matches = self.TPM_PATTERN.findall(log_text)
+        nopm_matches = self.NOPM_PATTERN.findall(log_text)
+        if tpm_matches and nopm_matches:
+            return TproccResult(
+                tpm=int(tpm_matches[-1]),
+                nopm=int(nopm_matches[-1]),
+            )
+        return None
+
+    def parse_tproch(self, log_text: str) -> TprochResult | None:
+        qphh_matches = self.QPHH_PATTERN.findall(log_text)
+        if not qphh_matches:
+            return None
+
+        qphh = float(qphh_matches[-1])
+        seen: dict[int, float] = {}
+        for qnum, qtime in self.QUERY_PATTERN.findall(log_text):
+            seen[int(qnum)] = float(qtime)
+        queries = [
+            TprochQueryResult(query_number=qn, time_seconds=seen[qn])
+            for qn in sorted(seen)
+        ]
+        return TprochResult(qphh=qphh, queries=queries)
+
+    def detect_error(self, log_text: str) -> str | None:
+        match = re.search(r"(?:ERROR)\s+\d+\s+.*?(?:\n|$)", log_text)
+        if match:
+            return match.group(0).strip()
+        return _detect_generic_error(log_text)
+
+
 def _detect_generic_error(log_text: str) -> str | None:
     """Generic error detection shared across parsers."""
     if "Error" in log_text or "FATAL" in log_text:
@@ -301,6 +349,7 @@ PARSERS: dict[str, OutputParser] = {
     "oracle": OracleParser(),
     "mssql": MssqlParser(),
     "postgres": PostgresParser(),
+    "mysql": MysqlParser(),
 }
 
 

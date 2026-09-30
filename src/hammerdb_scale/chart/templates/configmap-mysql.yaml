@@ -1,0 +1,27 @@
+{{- $hasMySQL := false -}}
+{{- range .Values.targets -}}
+  {{- if eq .type "mysql" -}}
+    {{- $hasMySQL = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hasMySQL }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hammerdb-scale-test.fullname" . }}-scripts-mysql
+  labels:
+    {{- include "hammerdb-scale-test.labels" . | nindent 4 }}
+    hammerdb.io/database-type: mysql
+data:
+  # HammerDB TCL scripts
+  {{- range $path, $_ := .Files.Glob "scripts/mysql/*.tcl" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+
+  # Pure Storage metrics collector
+  {{- if .Values.pureStorage.enabled }}
+  collect_pure_metrics.py: |-
+{{ .Files.Get "scripts/collect_pure_metrics.py" | indent 4 }}
+  {{- end }}
+{{- end }}

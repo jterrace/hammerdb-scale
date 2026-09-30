@@ -93,6 +93,8 @@ def build_target_env(
         env.update(_oracle_env(target))
     elif db_type == "postgres":
         env.update(_postgres_env(target, benchmark))
+    elif db_type == "mysql":
+        env.update(_mysql_env(target, benchmark))
 
     if benchmark == "tprocc":
         env.update(_tprocc_env(config, target, db_type))
@@ -171,6 +173,32 @@ def _postgres_env(target: dict, benchmark: str) -> dict[str, str]:
         env["TPROCH_PASSWORD"] = tproch.get("password") or "tpch"
         env["TPROCH_DATABASE_NAME"] = tproch.get("database_name") or "tpch"
         env["PG_MAX_PARALLEL_WORKERS"] = str(tproch.get("max_parallel_workers", 8))
+
+    return env
+
+
+def _mysql_env(target: dict, benchmark: str) -> dict[str, str]:
+    """MySQL connection and schema variables."""
+    my = target.get("mysql", {})
+    tprocc = my.get("tprocc", {})
+    tproch = my.get("tproch", {})
+
+    env = {
+        "MYSQL_PORT": str(my.get("port", 3306)),
+    }
+    if my.get("socket"):
+        env["MYSQL_SOCKET"] = my["socket"]
+
+    if benchmark == "tprocc":
+        env["TPROCC_USER"] = tprocc.get("user") or "tpcc"
+        env["TPROCC_PASSWORD"] = tprocc.get("password") or "tpcc"
+        env["TPROCC_DATABASE_NAME"] = tprocc.get("database_name") or "tpcc"
+        env["MYSQL_STOREDPROCS"] = _bool_str(tprocc.get("stored_procedures", True))
+        env["MYSQL_PARTITION"] = _bool_str(tprocc.get("partition", False))
+    else:
+        env["TPROCH_USER"] = tproch.get("user") or "tpch"
+        env["TPROCH_PASSWORD"] = tproch.get("password") or "tpch"
+        env["TPROCH_DATABASE_NAME"] = tproch.get("database_name") or "tpch"
 
     return env
 

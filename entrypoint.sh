@@ -140,8 +140,6 @@ case "$DATABASE_TYPE" in
         ;;
     mysql)
         log "Database: MySQL/MariaDB"
-        log "ERROR: MySQL support not yet implemented"
-        exit 1
         ;;
     *)
         log "ERROR: Unsupported DATABASE_TYPE: $DATABASE_TYPE"
@@ -263,9 +261,43 @@ elif [[ "$DATABASE_TYPE" == "postgres" ]]; then
         exit 1
     fi
 
-# EXTENSION POINT: Add MySQL script selection here
-# elif [[ "$DATABASE_TYPE" == "mysql" ]]; then
-#     ...
+elif [[ "$DATABASE_TYPE" == "mysql" ]]; then
+    if [[ "$BENCHMARK" == "tprocc" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tprocc.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tprocc.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tprocc.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    elif [[ "$BENCHMARK" == "tproch" ]]; then
+        case "$RUN_MODE" in
+            build)
+                SCRIPT_NAME="build_schema_tproch.tcl"
+                ;;
+            load)
+                SCRIPT_NAME="load_test_tproch.tcl"
+                ;;
+            parse)
+                SCRIPT_NAME="parse_output_tproch.tcl"
+                ;;
+            *)
+                log "ERROR: Unknown RUN_MODE: '$RUN_MODE' for benchmark '$BENCHMARK'"
+                exit 1
+                ;;
+        esac
+    else
+        log "ERROR: Unknown BENCHMARK: '$BENCHMARK'. Supported: tprocc, tproch"
+        exit 1
+    fi
 
 else
     log "ERROR: Script selection not implemented for DATABASE_TYPE: $DATABASE_TYPE"

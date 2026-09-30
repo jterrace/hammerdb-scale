@@ -233,6 +233,51 @@ spec:
         {{- end }}
         {{- end }}
 
+        {{- if eq $target.type "mysql" }}
+        # MySQL connection config
+        - name: MYSQL_PORT
+          value: {{ $target.mysql.port | default 3306 | quote }}
+        {{- if $target.mysql.socket }}
+        - name: MYSQL_SOCKET
+          value: {{ $target.mysql.socket | quote }}
+        {{- end }}
+        {{- if eq $.Values.testRun.benchmark "tprocc" }}
+        - name: TPROCC_USER
+          value: {{ $target.mysql.tprocc.user | default "tpcc" | quote }}
+        - name: TPROCC_DATABASE_NAME
+          value: {{ $target.mysql.tprocc.database_name | default "tpcc" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tprocc-password
+        {{- else }}
+        - name: TPROCC_PASSWORD
+          value: {{ $target.mysql.tprocc.password | default "tpcc" | quote }}
+        {{- end }}
+        - name: MYSQL_STOREDPROCS
+          value: {{ $target.mysql.tprocc.stored_procedures | default true | quote }}
+        - name: MYSQL_PARTITION
+          value: {{ $target.mysql.tprocc.partition | default false | quote }}
+        {{- else }}
+        - name: TPROCH_USER
+          value: {{ $target.mysql.tproch.user | default "tpch" | quote }}
+        - name: TPROCH_DATABASE_NAME
+          value: {{ $target.mysql.tproch.database_name | default "tpch" | quote }}
+        {{- if $useSecrets }}
+        - name: TPROCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: target-{{ $index }}-tproch-password
+        {{- else }}
+        - name: TPROCH_PASSWORD
+          value: {{ $target.mysql.tproch.password | default "tpch" | quote }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+
         {{- if eq $.Values.testRun.benchmark "tprocc" }}
         # TPC-C Configuration (from merged config)
         {{- if eq $target.type "mssql" }}

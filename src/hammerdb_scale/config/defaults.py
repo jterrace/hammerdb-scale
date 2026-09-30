@@ -76,6 +76,12 @@ def expand_targets(config: HammerDBScaleConfig) -> list[dict]:
                 host.postgres.model_dump(exclude_none=True) if host.postgres else {},
             )
             target["postgres"] = postgres
+        elif effective_type == DatabaseType.mysql:
+            mysql = _deep_merge(
+                defaults.mysql.model_dump() if defaults.mysql else {},
+                host.mysql.model_dump(exclude_none=True) if host.mysql else {},
+            )
+            target["mysql"] = mysql
 
         expanded.append(target)
 
